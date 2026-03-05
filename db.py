@@ -8,7 +8,6 @@ from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
-# Fetch the env vars. Strip them to ensure no hidden spaces.
 TURSO_URL   = os.environ.get("TURSO_URL", "").strip()
 TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "").strip()
 CATEGORIES  = (500, 1000, 2000, 4000)
@@ -16,13 +15,9 @@ CATEGORIES  = (500, 1000, 2000, 4000)
 def _conn():
     if not TURSO_URL or not TURSO_TOKEN:
         raise RuntimeError("TURSO_URL and TURSO_TOKEN env vars must be set.")
-    
-    # FIX for WSServerHandshakeError 505:
-    # Force HTTP instead of WebSockets (libsql://)
     safe_url = TURSO_URL
     if safe_url.startswith("libsql://"):
         safe_url = safe_url.replace("libsql://", "https://", 1)
-        
     return libsql_client.create_client_sync(url=safe_url, auth_token=TURSO_TOKEN)
 
 def init_db():
@@ -80,7 +75,8 @@ def set_protector_running(telegram_id: int, running: bool):
 
 def get_users_with_active_protector() -> List[int]:
     client = _conn()
-    result = client.execute("SELECT telegram_id FROM users WHERE protector_on=1 AND cookies IS NOT NULL")
+    # MODIFIED: Removed 'AND cookies IS NOT NULL' so users without personal cookies still get protected via the Global Cookie
+    result = client.execute("SELECT telegram_id FROM users WHERE protector_on=1")
     client.close()
     return [r[0] for r in result.rows]
 
@@ -194,6 +190,15 @@ def get_active_protector_count() -> int:
     result = client.execute("SELECT COUNT(*) FROM users WHERE protector_on=1")
     client.close()
     return result.rows[0][0] if result.rows else 0
+
+def get_total_checks() -> int:
+    return 0 
+
+def get_all_users() -> List[dict]:
+    client = _conn()
+    result = client.execute("SELECT telegram_id, username, created_at, cookies FROM users")
+    client.close()
+    return [{"telegram_id": r[0], "username": r[1], "created_at": r[2], "cookies": r[3]} for r in result.rows]
 
 # --- ALIAS FIXES FOR PROTECTOR.PY ---
 get_active_coupons = get_all_coupons
