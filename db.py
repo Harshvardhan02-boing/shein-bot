@@ -8,15 +8,22 @@ from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
-TURSO_URL   = os.environ.get("TURSO_URL", "")
-TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
+# Fetch the env vars. Strip them to ensure no hidden spaces.
+TURSO_URL   = os.environ.get("TURSO_URL", "").strip()
+TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "").strip()
 CATEGORIES  = (500, 1000, 2000, 4000)
 
 def _conn():
     if not TURSO_URL or not TURSO_TOKEN:
         raise RuntimeError("TURSO_URL and TURSO_TOKEN env vars must be set.")
-    # FIXED: auth_token instead of authToken
-    return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
+    
+    # FIX for WSServerHandshakeError 505:
+    # Force HTTP instead of WebSockets (libsql://)
+    safe_url = TURSO_URL
+    if safe_url.startswith("libsql://"):
+        safe_url = safe_url.replace("libsql://", "https://", 1)
+        
+    return libsql_client.create_client_sync(url=safe_url, auth_token=TURSO_TOKEN)
 
 def init_db():
     client = _conn()
