@@ -56,23 +56,23 @@ def upsert_user(telegram_id: int, username: str):
     client.execute("""
         INSERT INTO users (telegram_id, username) VALUES (?, ?)
         ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username
-    """, (telegram_id, username or ""))
+    """, [telegram_id, username or ""])
     client.close()
 
 def get_cookies(telegram_id: int) -> Optional[str]:
     client = _conn()
-    result = client.execute("SELECT cookies FROM users WHERE telegram_id=?", (telegram_id,))
+    result = client.execute("SELECT cookies FROM users WHERE telegram_id=?", [telegram_id])
     client.close()
     return str(result.rows[0][0]) if result.rows else None
 
 def set_cookies(telegram_id: int, cookies: str):
     client = _conn()
-    client.execute("UPDATE users SET cookies=? WHERE telegram_id=?", (cookies, telegram_id))
+    client.execute("UPDATE users SET cookies=? WHERE telegram_id=?", [cookies, telegram_id])
     client.close()
 
 def set_protector_running(telegram_id: int, running: bool):
     client = _conn()
-    client.execute("UPDATE users SET protector_on=? WHERE telegram_id=?", (1 if running else 0, telegram_id))
+    client.execute("UPDATE users SET protector_on=? WHERE telegram_id=?", [1 if running else 0, telegram_id])
     client.close()
 
 def get_users_with_active_protector() -> List[int]:
@@ -85,42 +85,46 @@ def get_users_with_active_protector() -> List[int]:
 
 def add_coupon(telegram_id: int, code: str, category: int, status: str = "unknown") -> bool:
     client = _conn()
+    
+    # 🔴 FIX: UPSERT logic resurrects the coupon if it was previously retrieved
     client.execute("""
-        INSERT OR IGNORE INTO coupons (telegram_id, code, category, status)
-        VALUES (?, ?, ?, ?)
-    """, (telegram_id, code.upper().strip(), int(category), status))
-    result = client.execute("SELECT id FROM coupons WHERE telegram_id=? AND code=?", (telegram_id, code.upper().strip()))
+        INSERT INTO coupons (telegram_id, code, category, status, retrieved)
+        VALUES (?, ?, ?, ?, 0)
+        ON CONFLICT(telegram_id, code) DO UPDATE SET 
+            retrieved=0, category=excluded.category, status=excluded.status
+    """, [telegram_id, code.upper().strip(), int(category), status])
+    
+    result = client.execute("SELECT id FROM coupons WHERE telegram_id=? AND code=?", [telegram_id, code.upper().strip()])
     client.close()
     return len(result.rows) > 0
 
 def update_coupon_status(telegram_id: int, code: str, status: str):
     client = _conn()
-    client.execute("UPDATE coupons SET status=? WHERE telegram_id=? AND code=?", (status, telegram_id, code.upper().strip()))
+    client.execute("UPDATE coupons SET status=? WHERE telegram_id=? AND code=?", [status, telegram_id, code.upper().strip()])
     client.close()
 
 def coupon_exists(telegram_id: int, code: str) -> bool:
     client = _conn()
-    result = client.execute("SELECT id FROM coupons WHERE telegram_id=? AND code=? AND retrieved=0", (telegram_id, code.upper().strip()))
+    result = client.execute("SELECT id FROM coupons WHERE telegram_id=? AND code=? AND retrieved=0", [telegram_id, code.upper().strip()])
     client.close()
     return len(result.rows) > 0
 
 def get_protected_coupons(telegram_id: int) -> List[dict]:
     client = _conn()
-    result = client.execute("SELECT id, telegram_id, code, category, status, retrieved, added_at FROM coupons WHERE telegram_id=? AND retrieved=0 ORDER BY added_at ASC", (telegram_id,))
+    result = client.execute("SELECT id, telegram_id, code, category, status, retrieved, added_at FROM coupons WHERE telegram_id=? AND retrieved=0 ORDER BY added_at ASC", [telegram_id])
     keys = ["id", "telegram_id", "code", "category", "status", "retrieved", "added_at"]
     client.close()
     return [dict(zip(keys, r)) for r in result.rows]
 
 def get_category_counts(telegram_id: int) -> dict:
     client = _conn()
-    result = client.execute("SELECT category, COUNT(*) FROM coupons WHERE telegram_id=? AND retrieved=0 GROUP BY category", (telegram_id,))
+    result = client.execute("SELECT category, COUNT(*) FROM coupons WHERE telegram_id=? AND retrieved=0 GROUP BY category", [telegram_id])
     counts = {c: 0 for c in CATEGORIES}
     
     for row in result.rows:
         try:
-            # STRICT CASTING: Forcing Turso's string/float returns into pure integers
-            cat = int(float(row[0])) 
-            cnt = int(float(row[1]))
+            cat = int(row[0]) 
+            cnt = int(row[1])
             if cat in counts:
                 counts[cat] = cnt
         except (ValueError, TypeError):
@@ -131,13 +135,13 @@ def get_category_counts(telegram_id: int) -> dict:
 
 def get_status_counts(telegram_id: int) -> dict:
     client = _conn()
-    result = client.execute("SELECT status, COUNT(*) FROM coupons WHERE telegram_id=? AND retrieved=0 GROUP BY status", (telegram_id,))
+    result = client.execute("SELECT status, COUNT(*) FROM coupons WHERE telegram_id=? AND retrieved=0 GROUP BY status", [telegram_id])
     status_dict = {"valid": 0, "invalid": 0, "redeemed": 0, "unknown": 0, "error": 0}
     
     for row in result.rows:
         try:
             status_val = str(row[0])
-            cnt = int(float(row[1]))
+            cnt = int(row[1])
             if status_val in status_dict:
                 status_dict[status_val] = cnt
         except (ValueError, TypeError):
@@ -148,25 +152,25 @@ def get_status_counts(telegram_id: int) -> dict:
 
 def retrieve_coupon(telegram_id: int, category: int) -> Optional[dict]:
     client = _conn()
-    result = client.execute("SELECT id, code, category FROM coupons WHERE telegram_id=? AND category=? AND retrieved=0 ORDER BY added_at ASC LIMIT 1", (telegram_id, int(category)))
+    result = client.execute("SELECT id, code, category FROM coupons WHERE telegram_id=? AND category=? AND retrieved=0 ORDER BY added_at ASC LIMIT 1", [telegram_id, int(category)])
     if not result.rows:
         client.close()
         return None
     row = result.rows[0]
-    client.execute("UPDATE coupons SET retrieved=1, retrieved_at=strftime('%Y-%m-%d %H:%M:%S','now') WHERE id=?", (row[0],))
+    client.execute("UPDATE coupons SET retrieved=1, retrieved_at=strftime('%Y-%m-%d %H:%M:%S','now') WHERE id=?", [row[0]])
     client.close()
-    return {"id": int(row[0]), "code": str(row[1]), "category": int(float(row[2]))}
+    return {"id": int(row[0]), "code": str(row[1]), "category": int(row[2])}
 
 def get_all_coupons(telegram_id: int) -> List[dict]:
     client = _conn()
-    result = client.execute("SELECT id, telegram_id, code, category, status, retrieved, added_at FROM coupons WHERE telegram_id=? AND retrieved=0 ORDER BY category ASC, added_at ASC", (telegram_id,))
+    result = client.execute("SELECT id, telegram_id, code, category, status, retrieved, added_at FROM coupons WHERE telegram_id=? AND retrieved=0 ORDER BY category ASC, added_at ASC", [telegram_id])
     keys = ["id", "telegram_id", "code", "category", "status", "retrieved", "added_at"]
     client.close()
     return [dict(zip(keys, r)) for r in result.rows]
 
 def delete_coupon(telegram_id: int, code: str):
     client = _conn()
-    client.execute("DELETE FROM coupons WHERE telegram_id=? AND code=?", (telegram_id, code.upper().strip()))
+    client.execute("DELETE FROM coupons WHERE telegram_id=? AND code=?", [telegram_id, code.upper().strip()])
     client.close()
 
 # ── ADMIN ─────────────────────────────────────────────────────────────────────
