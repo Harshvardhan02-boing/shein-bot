@@ -16,7 +16,9 @@ def parse_cookies(raw: str) -> str:
       - JSON dict:   {"aff_bm": "abc", "usc": "def"}
       - JSON array:  [{"name": "aff_bm", "value": "abc"}, ...]  (EditThisCookie)
     """
-    raw = raw.strip()
+    # 1. Strip whitespace and any accidental quotes from pasting
+    raw = raw.strip().strip("'").strip('"')
+    
     try:
         data = json.loads(raw)
         if isinstance(data, dict):
@@ -30,8 +32,10 @@ def parse_cookies(raw: str) -> str:
                 return "; ".join(parts)
         raise ValueError("Unrecognised JSON cookie format")
     except json.JSONDecodeError:
-        # Not JSON — treat as raw cookie string
-        return raw
+        # 2. If it's not valid JSON, treat it as a raw string
+        # We MUST completely destroy any newlines so the HTTP header doesn't crash
+        clean_raw = raw.replace('\n', '').replace('\r', '').strip()
+        return clean_raw
 
 def validate_cookies(raw: str) -> tuple[bool, str, str]:
     """
@@ -90,7 +94,7 @@ def apply_voucher(session: requests.Session, cookie_string: str, code: str) -> t
     url = "https://www.sheinindia.in/api/cart/apply-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
     
-    # 🔴 NEW FIX: Force parse the JSON into a flat string so the headers don't crash
+    # Force parse the JSON into a flat string so the headers don't crash
     clean_cookie = parse_cookies(cookie_string)
     headers = get_headers(clean_cookie)
     
@@ -122,7 +126,7 @@ def reset_voucher(session: requests.Session, cookie_string: str, code: str):
     url = "https://www.sheinindia.in/api/cart/reset-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
     
-    # 🔴 NEW FIX: Force parse here too
+    # Force parse here too
     clean_cookie = parse_cookies(cookie_string)
     
     try:
