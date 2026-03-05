@@ -256,7 +256,7 @@ async def cb_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text(
             f"📤 *Here's your ₹{category} coupon:*\n\n"
-            f"`{code['code']}`\n\n" # FIXED: dict key extraction
+            f"`{code['code']}`\n\n"
             f"⚡ Apply it on Shein *quickly* before the session expires!\n"
             f"🛒 sheinindia.in/cart → Enter coupon code\n\n"
             f"_{available - 1} ₹{category} coupon(s) remaining in vault_",
@@ -432,11 +432,28 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if state == "awaiting_check":
         ctx.user_data.pop("state", None)
         import re
-        raw_codes = [c.upper().strip() for c in re.split(r"[\s,\n]+", text) if c.strip()]
+        
+        # Split by spaces, commas, or newlines
+        raw_splits = re.split(r"[\s,\n]+", text)
+        
+        # Strict filter: Only keep strings that look like actual coupons (alphanumeric).
+        # This completely blocks accidental cookie strings (which contain = ; { } ")
+        raw_codes = []
+        for c in raw_splits:
+            c = c.upper().strip()
+            # If it's empty, or contains weird cookie characters, skip it
+            if not c or "=" in c or ";" in c or "{" in c or '"' in c:
+                continue
+            raw_codes.append(c)
 
         if not raw_codes:
-            await update.message.reply_text("⚠️ No codes found. Please paste coupon codes and try again.", reply_markup=back_keyboard())
+            await update.message.reply_text("⚠️ No valid codes found. Please make sure you didn't paste a cookie by accident.", reply_markup=back_keyboard())
             return
+
+        # Hard cap to prevent spamming the API and getting banned
+        if len(raw_codes) > 20:
+            await update.message.reply_text("⚠️ *Too many codes!*\n\nChecking maximum of 20 codes to prevent server bans.", parse_mode=ParseMode.MARKDOWN)
+            raw_codes = raw_codes[:20]
 
         cookie_raw = db.get_cookies(GLOBAL_UID)
         if not cookie_raw:
