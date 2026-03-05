@@ -38,7 +38,8 @@ async def _run_loop(telegram_id: int, bot):
     while True:
         try:
             # ── Fetch fresh coupon list and cookies every cycle ──────────────
-            cookie_raw = db.get_cookies(telegram_id)
+            # Note: Changed to await for Turso compatibility
+            cookie_raw = await db.get_cookies(telegram_id)
             if not cookie_raw:
                 await _notify(bot, telegram_id,
                     "⚠️ *Protector stopped* — no cookies found.\n"
@@ -48,7 +49,8 @@ async def _run_loop(telegram_id: int, bot):
             from scripts.shein_api import parse_cookies
             cookie_str = parse_cookies(cookie_raw)
 
-            coupons = db.get_active_coupons(telegram_id)
+            # Note: Changed to await for Turso compatibility
+            coupons = await db.get_active_coupons(telegram_id)
             if not coupons:
                 # No coupons left — pause and check again later
                 await asyncio.sleep(CYCLE_PAUSE)
@@ -60,7 +62,7 @@ async def _run_loop(telegram_id: int, bot):
                 code = coupon["code"]
 
                 # Check if coupon was removed mid-cycle
-                if not db.coupon_exists(telegram_id, code):
+                if not await db.coupon_exists(telegram_id, code):
                     continue
 
                 session = requests.Session()
@@ -78,7 +80,7 @@ async def _run_loop(telegram_id: int, bot):
                         "🔴 *Cookies Expired!*\n\n"
                         "Your Shein session has expired. Protection has stopped.\n"
                         "Please update your cookies using 🍪 *Set Cookies*.")
-                    db.clear_cookies(telegram_id)
+                    await db.clear_cookies(telegram_id)
                     return
 
                 elif status == STATUS_ERROR:
@@ -157,9 +159,11 @@ def running_count() -> int:
 
 async def restore_all(bot):
     """On bot startup — restart loops for all users who have active coupons."""
-    users = db.get_users_with_active_coupons()
+    # CHANGED: Added await and updated function name to match your db.py
+    users = await db.get_users_with_active_protector() 
     count = 0
-    for uid in users:
+    for row in users:
+        uid = row["telegram_id"] # Turso returns rows as dicts/objects
         if not is_running(uid):
             task = asyncio.create_task(_run_loop(uid, bot))
             _tasks[uid] = task
