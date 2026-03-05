@@ -9,6 +9,13 @@ import requests
 # ── COOKIE PARSING ────────────────────────────────────────────────────────────
 
 def parse_cookies(raw: str) -> str:
+    """
+    Accept cookies in any format and return a header-ready string.
+    Supported:
+      - Raw string:  "aff_bm=abc; usc=def; ..."
+      - JSON dict:   {"aff_bm": "abc", "usc": "def"}
+      - JSON array:  [{"name": "aff_bm", "value": "abc"}, ...]  (EditThisCookie)
+    """
     raw = raw.strip()
     try:
         data = json.loads(raw)
@@ -23,9 +30,13 @@ def parse_cookies(raw: str) -> str:
                 return "; ".join(parts)
         raise ValueError("Unrecognised JSON cookie format")
     except json.JSONDecodeError:
+        # Not JSON — treat as raw cookie string
         return raw
 
 def validate_cookies(raw: str) -> tuple[bool, str, str]:
+    """
+    Try to parse cookies and return (ok, cookie_string, error_message).
+    """
     raw = raw.strip()
     if not raw:
         return False, "", "Cookie string is empty."
@@ -71,20 +82,40 @@ def get_headers(cookie_string: str) -> dict:
 # ── API CALLS ─────────────────────────────────────────────────────────────────
 
 def apply_voucher(session: requests.Session, cookie_string: str, code: str) -> tuple:
+    """
+    POST apply-voucher.
+    Returns (status_code, response_dict).
+    status_code=None means network/timeout error.
+    """
     url = "https://www.sheinindia.in/api/cart/apply-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
+    headers = get_headers(cookie_string)
+    
+    print(f"\n🌐 [SHEIN API] Sending request for code: {code}")
+    print(f"🌐 [SHEIN API] Using User-Agent: {headers.get('user-agent')}")
+    
     try:
-        resp = session.post(url, json=payload, headers=get_headers(cookie_string), timeout=45)
+        resp = session.post(url, json=payload, headers=headers, timeout=45)
+        
+        # --- DIAGNOSTIC LOGGING ---
+        print(f"🌐 [SHEIN API] HTTP Status Code: {resp.status_code}")
+        print(f"🌐 [SHEIN API] Response Body: {resp.text[:300]}") # First 300 chars
+        # --------------------------
+        
         try:
             return resp.status_code, resp.json()
         except Exception:
             return resp.status_code, {"errorMessage": "non_json_response"}
+            
     except requests.exceptions.Timeout:
+        print("🌐 [SHEIN API] ❌ ERROR: Connection Timed Out. Shein might be blocking Railway's IP.")
         return None, {"errorMessage": "timeout"}
     except Exception as e:
+        print(f"🌐 [SHEIN API] ❌ ERROR: Network Request Failed: {e}")
         return None, {"errorMessage": str(e)}
 
 def reset_voucher(session: requests.Session, cookie_string: str, code: str):
+    """POST reset-voucher — removes coupon from cart. Fire and forget."""
     url = "https://www.sheinindia.in/api/cart/reset-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
     try:
@@ -94,27 +125,35 @@ def reset_voucher(session: requests.Session, cookie_string: str, code: str):
 
 # ── RESPONSE INTERPRETATION ───────────────────────────────────────────────────
 
-STATUS_VALID    = "valid"
-STATUS_REDEEMED = "redeemed"
-STATUS_INVALID  = "invalid"
-STATUS_EXPIRED  = "expired"
-STATUS_ERROR    = "error"
+# Possible return values from interpret_response:
+STATUS_VALID    = "valid"      # ✅ applied successfully
+STATUS_REDEEMED = "redeemed"   # 🟡 already used / in use
+STATUS_INVALID  = "invalid"    # ❌ not applicable / doesn't exist
+STATUS_EXPIRED  = "expired"    # 🔴 cookies expired (401/403 or auth error)
+STATUS_ERROR    = "error"      # ⚠️ network / timeout / block
 
 def interpret_response(http_status: int | None, data: dict) -> str:
+    """
+    Classify an apply-voucher response into one of the STATUS_* constants.
+    """
+    # Network / timeout errors
     if http_status is None:
         msg = str(data.get("errorMessage", "")).lower()
         if "timeout" in msg:
             return STATUS_ERROR
         return STATUS_ERROR
 
+    # Auth errors → cookies expired
     if http_status in (401, 403):
         return STATUS_EXPIRED
 
+    # No errorMessage = successfully applied ✅
     if "errorMessage" not in data:
         return STATUS_VALID
 
     err = data["errorMessage"]
 
+    # Non-JSON block response
     if isinstance(err, str):
         low = err.lower()
         if "block" in low or "non_json" in low:
@@ -123,18 +162,24 @@ def interpret_response(http_status: int | None, data: dict) -> str:
             return STATUS_EXPIRED
         return STATUS_INVALID
 
+    # Structured error object
     if isinstance(err, dict):
         errors = err.get("errors", [])
         for e in errors:
             msg = e.get("message", "").lower()
             etype = e.get("type", "").lower()
 
+            # Cookie / auth issues
             if any(k in msg for k in ("login", "sign in", "session", "unauthorized", "authentication")):
                 return STATUS_EXPIRED
             if any(k in msg for k in ("login", "auth")) and "voucher" not in etype:
                 return STATUS_EXPIRED
+
+            # Already redeemed / in use
             if any(k in msg for k in ("already", "redeemed", "in use", "used", "claimed")):
                 return STATUS_REDEEMED
+
+            # Not applicable / invalid
             if any(k in msg for k in ("not applicable", "invalid", "expired", "does not exist", "not found", "cannot")):
                 return STATUS_INVALID
 
