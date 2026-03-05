@@ -15,8 +15,8 @@ CATEGORIES  = (500, 1000, 2000, 4000)
 def _conn():
     if not TURSO_URL or not TURSO_TOKEN:
         raise RuntimeError("TURSO_URL and TURSO_TOKEN env vars must be set.")
-    # Use sync client to match your synchronous functions
-    return libsql_client.create_client_sync(url=TURSO_URL, authToken=TURSO_TOKEN)
+    # FIXED: auth_token instead of authToken
+    return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
 
 def init_db():
     client = _conn()
