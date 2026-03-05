@@ -210,3 +210,9 @@ def get_stats() -> dict:
         "active_protectors": active,
         "user_list": [{"telegram_id": r[0], "username": r[1], "created_at": r[2]} for r in rows]
     }
+
+# --- ALIAS FIXES FOR PROTECTOR.PY ---
+get_active_coupons = get_all_coupons
+
+def clear_cookies(telegram_id: int):
+    set_cookies(telegram_id, None)
