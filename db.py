@@ -211,6 +211,11 @@ def get_stats() -> dict:
         "user_list": [{"telegram_id": r[0], "username": r[1], "created_at": r[2]} for r in rows]
     }
 
+def get_user_count() -> int:
+    conn = _conn()
+    row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+    return row[0] if row else 0
+
 # --- ALIAS FIXES FOR PROTECTOR.PY ---
 get_active_coupons = get_all_coupons
 
