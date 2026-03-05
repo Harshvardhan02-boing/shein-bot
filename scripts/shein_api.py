@@ -89,7 +89,10 @@ def apply_voucher(session: requests.Session, cookie_string: str, code: str) -> t
     """
     url = "https://www.sheinindia.in/api/cart/apply-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
-    headers = get_headers(cookie_string)
+    
+    # 🔴 NEW FIX: Force parse the JSON into a flat string so the headers don't crash
+    clean_cookie = parse_cookies(cookie_string)
+    headers = get_headers(clean_cookie)
     
     print(f"\n🌐 [SHEIN API] Sending request for code: {code}")
     print(f"🌐 [SHEIN API] Using User-Agent: {headers.get('user-agent')}")
@@ -118,8 +121,12 @@ def reset_voucher(session: requests.Session, cookie_string: str, code: str):
     """POST reset-voucher — removes coupon from cart. Fire and forget."""
     url = "https://www.sheinindia.in/api/cart/reset-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
+    
+    # 🔴 NEW FIX: Force parse here too
+    clean_cookie = parse_cookies(cookie_string)
+    
     try:
-        session.post(url, json=payload, headers=get_headers(cookie_string), timeout=20)
+        session.post(url, json=payload, headers=get_headers(clean_cookie), timeout=20)
     except Exception:
         pass
 
