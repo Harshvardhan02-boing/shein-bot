@@ -34,10 +34,11 @@ ADMIN_IDS  = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.st
 CATEGORIES = [500, 1000, 2000, 4000]
 GLOBAL_UID = 0  
 
-# DB operations still use a thread pool because SQLite is synchronous
+# 🔴 TWO-POOL SYSTEM: Keeps the bot menus instantly responsive even if Shein times out!
 DB_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=40)
+API_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
-# We initialize the semaphore in post_init so modern Python doesn't crash
+# Initialized properly in post_init
 GLOBAL_API_SEMAPHORE = None 
 
 # ── KEYBOARDS ─────────────────────────────────────────────────────────────────
@@ -457,7 +458,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         failed = 0
         
         header = "📢 *Announcement*\n\n"
-        signature = "\n\n---Laadle Bot Ke Pitaji---"
+        signature = "\n\n---LaadleProtectorBot ke Pitaji---"
         
         if text:
             final_text = f"{header}{text}{signature}"
@@ -544,7 +545,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             active_codes = set()
 
-        batch_size = 4  
+        batch_size = 2  
         
         for i in range(0, total, batch_size):
             batch = raw_codes[i:i+batch_size]
@@ -558,12 +559,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 else:
                     filtered_batch.append(code)
 
-            # 🔴 FIXED: Awaiting the truly async function perfectly without ThreadPool wrap
+            # 🔴 FIXED: Properly wraps your existing synchronous checker safely!
             async def safe_check(c):
                 async with GLOBAL_API_SEMAPHORE:
-                    return await check_coupon(cookie_str, c)
+                    return await loop.run_in_executor(API_POOL, check_coupon, cookie_str, c)
 
             tasks = [safe_check(c) for c in filtered_batch]
+            
             if tasks:
                 batch_results = await asyncio.gather(*tasks)
             else:
@@ -599,7 +601,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
                 
-            await asyncio.sleep(random.uniform(2.5, 4.5))
+            await asyncio.sleep(random.uniform(2.0, 4.0))
 
         if expired:
             await loop.run_in_executor(DB_POOL, db.clear_cookies, GLOBAL_UID)
@@ -692,11 +694,10 @@ async def show_status(query, uid: int):
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 async def post_init(app: Application):
-    # Properly initialize the semaphore inside the event loop for Python 3.12+
+    # Initializes the semaphore correctly to prevent crashes
     global GLOBAL_API_SEMAPHORE
     GLOBAL_API_SEMAPHORE = asyncio.Semaphore(4)
     
-    # This prevents the default loop from getting starved by the protector loop
     loop = asyncio.get_event_loop()
     loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=30))
     
