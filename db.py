@@ -131,36 +131,7 @@ def get_category_counts(telegram_id: int) -> dict:
     client.close()
     return counts
 
-def get_status_counts(telegram_id: int) -> dict:
-    client = _conn()
-    result = client.execute("SELECT status, COUNT(*) FROM coupons WHERE telegram_id=? AND retrieved=0 GROUP BY status", [telegram_id])
-    status_dict = {"valid": 0, "invalid": 0, "redeemed": 0, "unknown": 0, "error": 0}
-    
-    for row in result.rows:
-        try:
-            status_val = str(row[0])
-            cnt = int(row[1])
-            if status_val in status_dict:
-                status_dict[status_val] = cnt
-        except (ValueError, TypeError):
-            continue
-            
-    client.close()
-    return status_dict
-
-def retrieve_coupon(telegram_id: int, category: int) -> Optional[dict]:
-    client = _conn()
-    result = client.execute("SELECT id, code, category FROM coupons WHERE telegram_id=? AND category=? AND retrieved=0 ORDER BY added_at ASC LIMIT 1", [telegram_id, int(category)])
-    if not result.rows:
-        client.close()
-        return None
-    row = result.rows[0]
-    client.execute("UPDATE coupons SET retrieved=1, retrieved_at=strftime('%Y-%m-%d %H:%M:%S','now') WHERE id=?", [row[0]])
-    client.close()
-    return {"id": int(row[0]), "code": str(row[1]), "category": int(row[2])}
-
 def retrieve_multiple_coupons(telegram_id: int, category: int, limit: int) -> List[str]:
-    """Retrieves a bulk list of coupons."""
     client = _conn()
     limit_clause = f"LIMIT {int(limit)}" if limit > 0 else ""
     result = client.execute(f"SELECT id, code FROM coupons WHERE telegram_id=? AND category=? AND retrieved=0 ORDER BY added_at ASC {limit_clause}", [telegram_id, int(category)])
@@ -181,6 +152,21 @@ def retrieve_multiple_coupons(telegram_id: int, category: int, limit: int) -> Li
         
     client.close()
     return codes
+
+def get_user_history(telegram_id: int) -> dict:
+    """Gets active coupons and retrieved coupons from the last 3 days."""
+    client = _conn()
+    
+    # Get Active
+    res_active = client.execute("SELECT code, category, added_at FROM coupons WHERE telegram_id=? AND retrieved=0 ORDER BY category ASC, added_at ASC", [telegram_id])
+    active = [{"code": str(r[0]), "category": int(r[1]), "added_at": str(r[2])} for r in res_active.rows]
+    
+    # Get Retrieved (Last 3 Days)
+    res_retrieved = client.execute("SELECT code, category, retrieved_at FROM coupons WHERE telegram_id=? AND retrieved=1 AND retrieved_at >= datetime('now', '-3 days') ORDER BY retrieved_at DESC", [telegram_id])
+    retrieved = [{"code": str(r[0]), "category": int(r[1]), "retrieved_at": str(r[2])} for r in res_retrieved.rows]
+    
+    client.close()
+    return {"active": active, "retrieved": retrieved}
 
 def get_all_coupons(telegram_id: int) -> List[dict]:
     client = _conn()
@@ -203,7 +189,6 @@ def get_all_user_ids() -> List[int]:
     return [int(r[0]) for r in result.rows]
 
 def get_users_with_coupon_counts() -> List[dict]:
-    """NEW: Fetches users and dynamically counts their active vault size."""
     client = _conn()
     result = client.execute("""
         SELECT u.telegram_id, u.username, COUNT(c.id) 
@@ -214,24 +199,6 @@ def get_users_with_coupon_counts() -> List[dict]:
     """)
     client.close()
     return [{"telegram_id": int(r[0]), "username": str(r[1] or 'unknown'), "active_count": int(r[2])} for r in result.rows]
-
-def get_stats() -> dict:
-    client = _conn()
-    try:
-        users = int(client.execute("SELECT COUNT(*) FROM users").rows[0][0])
-        coupons = int(client.execute("SELECT COUNT(*) FROM coupons WHERE retrieved=0").rows[0][0])
-        active = int(client.execute("SELECT COUNT(*) FROM users WHERE protector_on=1").rows[0][0])
-    except Exception:
-        users, coupons, active = 0, 0, 0
-        
-    result = client.execute("SELECT telegram_id, username, created_at FROM users ORDER BY created_at DESC LIMIT 50")
-    client.close()
-    return {
-        "users": users,
-        "coupons": coupons,
-        "active_protectors": active,
-        "user_list": [{"telegram_id": int(r[0]), "username": str(r[1]), "created_at": str(r[2])} for r in result.rows]
-    }
 
 def get_user_count() -> int:
     client = _conn()
@@ -245,7 +212,6 @@ def get_total_voucher_count() -> int:
     client.close()
     return int(result.rows[0][0]) if result.rows else 0
 
-# --- ALIAS FIXES FOR PROTECTOR.PY ---
 get_active_coupons = get_all_coupons
 
 def clear_cookies(telegram_id: int):
