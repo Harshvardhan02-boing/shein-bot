@@ -75,7 +75,7 @@ async def _run_loop(telegram_id: int, bot):
                         await loop.run_in_executor(None, db.clear_cookies, GLOBAL_UID)
                         await _notify_admin(bot, "🚨 *CRITICAL PROTECTOR STOP:* The global Shein cookie expired in the background!\n\nAll protection loops are paused. Please set a new cookie in the Admin Panel.")
                         await asyncio.sleep(CYCLE_PAUSE)
-                        break  # Break out of the coupon loop to wait for a new cookie
+                        break  
 
                     elif status == STATUS_ERROR:
                         consecutive_fails += 1
