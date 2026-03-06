@@ -35,9 +35,8 @@ CATEGORIES = [500, 1000, 2000, 4000]
 GLOBAL_UID = 0  
 
 # 🔴 ANTI-FREEZE UPGRADES: 
-# A controlled worker pool and a strict semaphore to prevent CPU starvation.
-WORKER_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=10)
-GLOBAL_API_SEMAPHORE = asyncio.Semaphore(5) 
+# A controlled worker pool limits concurrent background DB/API calls so the bot never freezes for users.
+WORKER_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=15)
 
 # ── KEYBOARDS ─────────────────────────────────────────────────────────────────
 
@@ -384,22 +383,22 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not uname or uname.lower() == "none":
                 uname = "unknown"
             
-            safe_uname = uname.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
-            user_lines_list.append(f"  • @{safe_uname} <code>({u['telegram_id']})</code>: <b>{u['active_count']}</b> protected")
+            safe_uname = uname.replace("_", "-").replace("*", "")
+            user_lines_list.append(f"  • @{safe_uname} `({u['telegram_id']})`: *{u['active_count']}* protected")
             
         user_lines = "\n".join(user_lines_list)
 
         if len(all_users) > 30:
-            user_lines += f"\n  <i>...and {len(all_users)-30} more</i>"
+            user_lines += f"\n  _...and {len(all_users)-30} more_"
 
         text = (
-            f"📊 <b>Live Bot Dashboard</b>\n\n"
-            f"👥 Total users: <b>{users}</b>\n"
-            f"🎫 Active coupons globally: <b>{coupons}</b>\n"
-            f"🔒 Running background loops: <b>{running}</b>\n\n"
-            f"👤 <b>User Leaderboard:</b>\n{user_lines}"
+            f"📊 *Live Bot Dashboard*\n\n"
+            f"👥 Total users: *{users}*\n"
+            f"🎫 Active coupons globally: *{coupons}*\n"
+            f"🔒 Running background loops: *{running}*\n\n"
+            f"👤 *User Leaderboard:*\n{user_lines}"
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=admin_keyboard())
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
         return
 
 # ── MESSAGE HANDLER ───────────────────────────────────────────────────────────
@@ -456,7 +455,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         failed = 0
         
         header = "📢 *Announcement*\n\n"
-        signature = "\n\n---Laadle Bot Ke Pitaji---"
+        signature = "\n\n---LaadleProtectorBot ke Pitaji---"
         
         if text:
             final_text = f"{header}{text}{signature}"
@@ -493,4 +492,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         await loop.run_in_executor(WORKER_POOL, db.upsert_user, GLOBAL_UID, "SYSTEM_ACCOUNT")
         await loop.run_in_executor(WORKER_POOL, db.set_cookies, GLOBAL_UID, text)
-        await update.message.reply_text("✅ *Global Cookies saved successfully!*\n\nThe entire bot and all background protectors are now using this session.", parse_mode=ParseMode.MARKDO
+        await update.message.reply_text("✅ *Global Cookies saved successfully!*\n\nThe entire bot and all background protectors are now using this session.", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
+        return
+
+    # ── BULK ADD & CHECK ENG
