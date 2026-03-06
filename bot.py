@@ -34,9 +34,12 @@ ADMIN_IDS  = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.st
 CATEGORIES = [500, 1000, 2000, 4000]
 GLOBAL_UID = 0  
 
-# 🔴 ANTI-FREEZE UPGRADES: 
-# A controlled worker pool limits concurrent background DB/API calls so the bot never freezes for users.
-WORKER_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=15)
+# 🔴 ANTI-FREEZE & ANTI-BOT UPGRADES:
+# 1. DB_POOL: Guarantees the bot menus NEVER freeze, even if Shein's API is completely down/timed out.
+# 2. API_POOL & SEMAPHORE: Strictly throttles requests to stop Shein (Akamai) from throwing 503 IP Blocks.
+DB_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=40)
+API_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+GLOBAL_API_SEMAPHORE = asyncio.Semaphore(2) 
 
 # ── KEYBOARDS ─────────────────────────────────────────────────────────────────
 
@@ -142,7 +145,7 @@ MAIN_MENU_TEXT = (
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(WORKER_POOL, db.upsert_user, user.id, user.username or user.first_name or "")
+    await loop.run_in_executor(DB_POOL, db.upsert_user, user.id, user.username or user.first_name or "")
     
     await update.message.reply_text(
         "Welcome to Laadle Protector Vault|\n\n"
@@ -187,7 +190,7 @@ async def cb_main_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "menu_retrieve":
         loop = asyncio.get_event_loop()
-        counts = await loop.run_in_executor(WORKER_POOL, db.get_category_counts, uid)
+        counts = await loop.run_in_executor(DB_POOL, db.get_category_counts, uid)
         
         if sum(counts.values()) == 0:
             await query.edit_message_text("📭 *Your vault is empty*\n\nAdd coupons first.", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
@@ -209,7 +212,7 @@ async def cb_main_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
     if data == "menu_history":
         loop = asyncio.get_event_loop()
-        hist = await loop.run_in_executor(WORKER_POOL, db.get_user_history, uid)
+        hist = await loop.run_in_executor(DB_POOL, db.get_user_history, uid)
         
         active = hist["active"]
         retrieved = hist["retrieved"]
@@ -269,7 +272,7 @@ async def cb_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if action == "retrieve":
         loop = asyncio.get_event_loop()
-        counts = await loop.run_in_executor(WORKER_POOL, db.get_category_counts, uid)
+        counts = await loop.run_in_executor(DB_POOL, db.get_category_counts, uid)
         available = counts.get(category, 0)
         
         if available == 0:
@@ -292,7 +295,7 @@ async def cb_retqty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     qty = int(qty_str)
 
     loop = asyncio.get_event_loop()
-    counts = await loop.run_in_executor(WORKER_POOL, db.get_category_counts, uid)
+    counts = await loop.run_in_executor(DB_POOL, db.get_category_counts, uid)
     available = counts.get(category, 0)
 
     if available == 0:
@@ -300,9 +303,9 @@ async def cb_retqty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     limit = qty if (qty > 0 and qty <= available) else available
-    codes = await loop.run_in_executor(WORKER_POOL, db.retrieve_multiple_coupons, uid, category, limit)
+    codes = await loop.run_in_executor(DB_POOL, db.retrieve_multiple_coupons, uid, category, limit)
 
-    remaining = await loop.run_in_executor(WORKER_POOL, db.get_active_coupons, uid)
+    remaining = await loop.run_in_executor(DB_POOL, db.get_active_coupons, uid)
     if not remaining:
         protector.stop(uid)
 
@@ -360,22 +363,22 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
     if data == "admin_cookie_status":
         loop = asyncio.get_event_loop()
-        cookies = await loop.run_in_executor(WORKER_POOL, db.get_cookies, GLOBAL_UID)
+        cookies = await loop.run_in_executor(DB_POOL, db.get_cookies, GLOBAL_UID)
         status = "✅ Active & Set" if cookies else "❌ Missing / Not Set"
         await query.edit_message_text(f"🌐 *Global Cookie Status:*\n\nStatus: {status}\n\n_If active, all background protectors and user-checkers are functioning._", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
         return
 
     if data == "admin_stats":
         loop = asyncio.get_event_loop()
-        users       = await loop.run_in_executor(WORKER_POOL, db.get_user_count)
-        coupons     = await loop.run_in_executor(WORKER_POOL, db.get_total_voucher_count)
+        users       = await loop.run_in_executor(DB_POOL, db.get_user_count)
+        coupons     = await loop.run_in_executor(DB_POOL, db.get_total_voucher_count)
         
         try:
-            running = await loop.run_in_executor(WORKER_POOL, db.get_active_protector_count)
+            running = await loop.run_in_executor(DB_POOL, db.get_active_protector_count)
         except AttributeError:
             running = "N/A"
             
-        all_users   = await loop.run_in_executor(WORKER_POOL, db.get_users_with_coupon_counts)
+        all_users   = await loop.run_in_executor(DB_POOL, db.get_users_with_coupon_counts)
 
         user_lines_list = []
         for u in all_users[:30]:
@@ -383,22 +386,22 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not uname or uname.lower() == "none":
                 uname = "unknown"
             
-            safe_uname = uname.replace("_", "-").replace("*", "")
-            user_lines_list.append(f"  • @{safe_uname} `({u['telegram_id']})`: *{u['active_count']}* protected")
+            safe_uname = uname.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+            user_lines_list.append(f"  • @{safe_uname} <code>({u['telegram_id']})</code>: <b>{u['active_count']}</b> protected")
             
         user_lines = "\n".join(user_lines_list)
 
         if len(all_users) > 30:
-            user_lines += f"\n  _...and {len(all_users)-30} more_"
+            user_lines += f"\n  <i>...and {len(all_users)-30} more</i>"
 
         text = (
-            f"📊 *Live Bot Dashboard*\n\n"
-            f"👥 Total users: *{users}*\n"
-            f"🎫 Active coupons globally: *{coupons}*\n"
-            f"🔒 Running background loops: *{running}*\n\n"
-            f"👤 *User Leaderboard:*\n{user_lines}"
+            f"📊 <b>Live Bot Dashboard</b>\n\n"
+            f"👥 Total users: <b>{users}</b>\n"
+            f"🎫 Active coupons globally: <b>{coupons}</b>\n"
+            f"🔒 Running background loops: <b>{running}</b>\n\n"
+            f"👤 <b>User Leaderboard:</b>\n{user_lines}"
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=admin_keyboard())
         return
 
 # ── MESSAGE HANDLER ───────────────────────────────────────────────────────────
@@ -415,7 +418,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.message.caption.strip()
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(WORKER_POOL, db.upsert_user, uid, update.effective_user.username or "")
+    await loop.run_in_executor(DB_POOL, db.upsert_user, uid, update.effective_user.username or "")
 
     if text == "📱 Open Menu":
         ctx.user_data.pop("state", None)
@@ -443,7 +446,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         target = ctx.user_data.pop("announce_target", "ALL")
 
         if target.upper() == "ALL":
-            all_ids = await loop.run_in_executor(WORKER_POOL, db.get_all_user_ids)
+            all_ids = await loop.run_in_executor(DB_POOL, db.get_all_user_ids)
         else:
             try:
                 all_ids = [int(target)]
@@ -490,8 +493,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ *Invalid cookies*\n\n{err}", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
             return
             
-        await loop.run_in_executor(WORKER_POOL, db.upsert_user, GLOBAL_UID, "SYSTEM_ACCOUNT")
-        await loop.run_in_executor(WORKER_POOL, db.set_cookies, GLOBAL_UID, text)
+        await loop.run_in_executor(DB_POOL, db.upsert_user, GLOBAL_UID, "SYSTEM_ACCOUNT")
+        await loop.run_in_executor(DB_POOL, db.set_cookies, GLOBAL_UID, text)
         await update.message.reply_text("✅ *Global Cookies saved successfully!*\n\nThe entire bot and all background protectors are now using this session.", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
         return
 
@@ -518,7 +521,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"⚠️ *Too many codes!*\n\nChecking maximum of {limit} codes.", parse_mode=ParseMode.MARKDOWN)
                 raw_codes = raw_codes[:limit]
 
-        cookie_raw = await loop.run_in_executor(WORKER_POOL, db.get_cookies, GLOBAL_UID)
+        cookie_raw = await loop.run_in_executor(DB_POOL, db.get_cookies, GLOBAL_UID)
         if not cookie_raw:
             await update.message.reply_text("❌ *System Maintenance*\n\nThe global system cookie is missing.", parse_mode=ParseMode.MARKDOWN)
             return
@@ -537,12 +540,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         processed = 0
         
         if state == "awaiting_add_coupon":
-            active_coupons = await loop.run_in_executor(WORKER_POOL, db.get_active_coupons, uid)
+            active_coupons = await loop.run_in_executor(DB_POOL, db.get_active_coupons, uid)
             active_codes = {c["code"] for c in active_coupons}
         else:
             active_codes = set()
 
-        batch_size = 3  
+        # 🔴 ANTI-AKAMAI STEALTH BATCHING
+        batch_size = 2  # Slowed down batch size to bypass Shein's 503 limits
         
         for i in range(0, total, batch_size):
             batch = raw_codes[i:i+batch_size]
@@ -556,7 +560,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 else:
                     filtered_batch.append(code)
 
-            tasks = [loop.run_in_executor(WORKER_POOL, check_coupon, cookie_str, c) for c in filtered_batch]
+            # 🔴 PREVENTS FREEZES: Binds the check to the strictly limited API_POOL
+            async def safe_check(c):
+                async with GLOBAL_API_SEMAPHORE:
+                    return await loop.run_in_executor(API_POOL, check_coupon, cookie_str, c)
+
+            tasks = [safe_check(c) for c in filtered_batch]
             batch_results = await asyncio.gather(*tasks)
 
             for result in batch_results:
@@ -570,7 +579,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if result["status"] == "valid":
                     valid_ct += 1
                     if state == "awaiting_add_coupon":
-                        await loop.run_in_executor(WORKER_POOL, db.add_coupon, uid, result["code"], category)
+                        await loop.run_in_executor(DB_POOL, db.add_coupon, uid, result["code"], category)
                         active_codes.add(result["code"])
                 elif result["status"] == "redeemed":
                     redeemed_ct += 1
@@ -589,10 +598,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
                 
-            await asyncio.sleep(random.uniform(1.5, 3.0))
+            # Increased human-like delay to stop 503 connection timeouts
+            await asyncio.sleep(random.uniform(2.5, 4.5))
 
         if expired:
-            await loop.run_in_executor(WORKER_POOL, db.clear_cookies, GLOBAL_UID)
+            await loop.run_in_executor(DB_POOL, db.clear_cookies, GLOBAL_UID)
             await notify_admins(ctx.bot, "🚨 *CRITICAL:* The global Shein cookie expired! Please set a new one.")
             await msg.edit_text("🔴 *System Maintenance*\n\nThe backend session expired.", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
             return
@@ -655,7 +665,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def show_status(query, uid: int):
     loop = asyncio.get_event_loop()
-    counts = await loop.run_in_executor(WORKER_POOL, db.get_category_counts, uid)
+    counts = await loop.run_in_executor(DB_POOL, db.get_category_counts, uid)
     total     = sum(counts.values())
     running   = protector.is_running(uid)
 
@@ -682,6 +692,10 @@ async def show_status(query, uid: int):
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 async def post_init(app: Application):
+    # This prevents the default loop from getting starved by the protector loop
+    loop = asyncio.get_event_loop()
+    loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=30))
+    
     db.init_db()
     db.upsert_user(GLOBAL_UID, "SYSTEM_GLOBAL")
     await protector.restore_all(app.bot)
