@@ -118,16 +118,12 @@ def get_category_counts(telegram_id: int) -> dict:
     client = _conn()
     result = client.execute("SELECT category, COUNT(*) FROM coupons WHERE telegram_id=? AND retrieved=0 GROUP BY category", [telegram_id])
     counts = {c: 0 for c in CATEGORIES}
-    
     for row in result.rows:
         try:
             cat = int(row[0]) 
             cnt = int(row[1])
-            if cat in counts:
-                counts[cat] = cnt
-        except (ValueError, TypeError):
-            continue
-            
+            if cat in counts: counts[cat] = cnt
+        except (ValueError, TypeError): continue
     client.close()
     return counts
 
@@ -154,14 +150,10 @@ def retrieve_multiple_coupons(telegram_id: int, category: int, limit: int) -> Li
     return codes
 
 def get_user_history(telegram_id: int) -> dict:
-    """Gets active coupons and retrieved coupons from the last 3 days."""
     client = _conn()
-    
-    # Get Active
     res_active = client.execute("SELECT code, category, added_at FROM coupons WHERE telegram_id=? AND retrieved=0 ORDER BY category ASC, added_at ASC", [telegram_id])
     active = [{"code": str(r[0]), "category": int(r[1]), "added_at": str(r[2])} for r in res_active.rows]
     
-    # Get Retrieved (Last 3 Days)
     res_retrieved = client.execute("SELECT code, category, retrieved_at FROM coupons WHERE telegram_id=? AND retrieved=1 AND retrieved_at >= datetime('now', '-3 days') ORDER BY retrieved_at DESC", [telegram_id])
     retrieved = [{"code": str(r[0]), "category": int(r[1]), "retrieved_at": str(r[2])} for r in res_retrieved.rows]
     
@@ -190,27 +182,49 @@ def get_all_user_ids() -> List[int]:
 
 def get_users_with_coupon_counts() -> List[dict]:
     client = _conn()
-    result = client.execute("""
-        SELECT u.telegram_id, u.username, COUNT(c.id) 
-        FROM users u 
-        LEFT JOIN coupons c ON u.telegram_id = c.telegram_id AND c.retrieved = 0 
-        GROUP BY u.telegram_id
-        ORDER BY COUNT(c.id) DESC
-    """)
-    client.close()
-    return [{"telegram_id": int(r[0]), "username": str(r[1] or 'unknown'), "active_count": int(r[2])} for r in result.rows]
+    try:
+        result = client.execute("""
+            SELECT u.telegram_id, u.username, COUNT(c.id) 
+            FROM users u 
+            LEFT JOIN coupons c ON u.telegram_id = c.telegram_id AND c.retrieved = 0 
+            WHERE u.telegram_id != 0
+            GROUP BY u.telegram_id
+            ORDER BY COUNT(c.id) DESC
+        """)
+        users = []
+        for r in result.rows:
+            try:
+                uid = int(r[0])
+                uname = str(r[1]) if r[1] else "unknown"
+                count = int(float(r[2]))
+                users.append({"telegram_id": uid, "username": uname, "active_count": count})
+            except Exception:
+                continue
+        client.close()
+        return users
+    except Exception as e:
+        logger.error(f"Failed to fetch user list: {e}")
+        client.close()
+        return []
 
 def get_user_count() -> int:
     client = _conn()
-    result = client.execute("SELECT COUNT(*) FROM users")
+    result = client.execute("SELECT COUNT(*) FROM users WHERE telegram_id != 0")
     client.close()
-    return int(result.rows[0][0]) if result.rows else 0
+    return int(float(result.rows[0][0])) if result.rows else 0
 
 def get_total_voucher_count() -> int:
     client = _conn()
     result = client.execute("SELECT COUNT(*) FROM coupons WHERE retrieved=0")
     client.close()
-    return int(result.rows[0][0]) if result.rows else 0
+    return int(float(result.rows[0][0])) if result.rows else 0
+
+# 🔴 THIS WAS MISSING: The function that counts active loops
+def get_active_protector_count() -> int:
+    client = _conn()
+    result = client.execute("SELECT COUNT(*) FROM users WHERE protector_on=1")
+    client.close()
+    return int(float(result.rows[0][0])) if result.rows else 0
 
 get_active_coupons = get_all_coupons
 
