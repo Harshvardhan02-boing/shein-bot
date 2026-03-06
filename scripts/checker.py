@@ -1,9 +1,9 @@
 """
-checker.py — Coupon validity checker
-Runs synchronously (call via run_in_executor from async bot code).
+checker.py — Async Coupon validity checker
 """
 
-import requests
+import httpx
+import asyncio
 from scripts.shein_api import (
     apply_voucher, reset_voucher, interpret_response,
     STATUS_VALID, STATUS_REDEEMED, STATUS_INVALID,
@@ -18,10 +18,10 @@ STATUS_META = {
     STATUS_ERROR:    {"emoji": "⚠️",  "label": "Network Error"},
 }
 
-def check_coupon(cookie_string: str, code: str) -> dict:
+# 🔴 NOW FULLY ASYNC
+async def check_coupon(cookie_string: str, code: str) -> dict:
     code = code.upper().strip()
 
-    # Removed the >25 character limit as requested.
     if len(code) < 4:
         return {
             "code": code,
@@ -31,13 +31,13 @@ def check_coupon(cookie_string: str, code: str) -> dict:
             "cookies_expired": False,
         }
 
-    session = requests.Session()
-    try:
-        http_status, data = apply_voucher(session, cookie_string, code)
+    async with httpx.AsyncClient() as client:
+        http_status, data = await apply_voucher(client, cookie_string, code)
         status = interpret_response(http_status, data)
 
         if status not in (STATUS_EXPIRED, STATUS_ERROR):
-            reset_voucher(session, cookie_string, code)
+            # Fire and forget reset
+            asyncio.create_task(reset_voucher(client, cookie_string, code))
 
         meta = STATUS_META.get(status, STATUS_META[STATUS_INVALID])
         return {
@@ -47,5 +47,3 @@ def check_coupon(cookie_string: str, code: str) -> dict:
             "label": meta["label"],
             "cookies_expired": status == STATUS_EXPIRED,
         }
-    finally:
-        session.close()
