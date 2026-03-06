@@ -10,6 +10,7 @@ import time
 import re
 import random
 import datetime
+import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -32,6 +33,10 @@ BOT_TOKEN  = os.environ["BOT_TOKEN"]
 ADMIN_IDS  = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
 CATEGORIES = [500, 1000, 2000, 4000]
 GLOBAL_UID = 0  
+
+# 🔴 CRITICAL SCALING UPGRADE: 
+# This dedicated thread pool gives the bot 64 lanes of traffic instead of the default 5.
+WORKER_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=64)
 
 # ── KEYBOARDS ─────────────────────────────────────────────────────────────────
 
@@ -180,7 +185,9 @@ async def cb_main_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "menu_retrieve":
-        counts = db.get_category_counts(uid)
+        loop = asyncio.get_event_loop()
+        counts = await loop.run_in_executor(WORKER_POOL, db.get_category_counts, uid)
+        
         if sum(counts.values()) == 0:
             await query.edit_message_text("📭 *Your vault is empty*\n\nAdd coupons first.", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
             return
@@ -200,7 +207,9 @@ async def cb_main_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
         
     if data == "menu_history":
-        hist = db.get_user_history(uid)
+        loop = asyncio.get_event_loop()
+        hist = await loop.run_in_executor(WORKER_POOL, db.get_user_history, uid)
+        
         active = hist["active"]
         retrieved = hist["retrieved"]
         
@@ -258,8 +267,10 @@ async def cb_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == "retrieve":
-        counts = db.get_category_counts(uid)
+        loop = asyncio.get_event_loop()
+        counts = await loop.run_in_executor(WORKER_POOL, db.get_category_counts, uid)
         available = counts.get(category, 0)
+        
         if available == 0:
             await query.edit_message_text(f"📭 *No ₹{category} coupons available*\n\nAdd some first.", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
             return
@@ -279,7 +290,8 @@ async def cb_retqty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     category = int(cat_str)
     qty = int(qty_str)
 
-    counts = db.get_category_counts(uid)
+    loop = asyncio.get_event_loop()
+    counts = await loop.run_in_executor(WORKER_POOL, db.get_category_counts, uid)
     available = counts.get(category, 0)
 
     if available == 0:
@@ -287,9 +299,9 @@ async def cb_retqty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     limit = qty if (qty > 0 and qty <= available) else available
-    codes = db.retrieve_multiple_coupons(uid, category, limit)
+    codes = await loop.run_in_executor(WORKER_POOL, db.retrieve_multiple_coupons, uid, category, limit)
 
-    remaining = db.get_active_coupons(uid)
+    remaining = await loop.run_in_executor(WORKER_POOL, db.get_active_coupons, uid)
     if not remaining:
         protector.stop(uid)
 
@@ -346,21 +358,23 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
         
     if data == "admin_cookie_status":
-        cookies = db.get_cookies(GLOBAL_UID)
+        loop = asyncio.get_event_loop()
+        cookies = await loop.run_in_executor(WORKER_POOL, db.get_cookies, GLOBAL_UID)
         status = "✅ Active & Set" if cookies else "❌ Missing / Not Set"
         await query.edit_message_text(f"🌐 *Global Cookie Status:*\n\nStatus: {status}\n\n_If active, all background protectors and user-checkers are functioning._", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
         return
 
     if data == "admin_stats":
-        users       = db.get_user_count()
-        coupons     = db.get_total_voucher_count()
+        loop = asyncio.get_event_loop()
+        users       = await loop.run_in_executor(WORKER_POOL, db.get_user_count)
+        coupons     = await loop.run_in_executor(WORKER_POOL, db.get_total_voucher_count)
         
         try:
-            running = db.get_active_protector_count() 
+            running = await loop.run_in_executor(WORKER_POOL, db.get_active_protector_count)
         except AttributeError:
             running = "N/A"
             
-        all_users   = db.get_users_with_coupon_counts()
+        all_users   = await loop.run_in_executor(WORKER_POOL, db.get_users_with_coupon_counts)
 
         user_lines_list = []
         for u in all_users[:30]:
@@ -400,7 +414,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif update.message.caption:
         text = update.message.caption.strip()
 
-    db.upsert_user(uid, update.effective_user.username or "")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(WORKER_POOL, db.upsert_user, uid, update.effective_user.username or "")
 
     if text == "📱 Open Menu":
         ctx.user_data.pop("state", None)
@@ -428,7 +443,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         target = ctx.user_data.pop("announce_target", "ALL")
 
         if target.upper() == "ALL":
-            all_ids = db.get_all_user_ids()
+            all_ids = await loop.run_in_executor(WORKER_POOL, db.get_all_user_ids)
         else:
             try:
                 all_ids = [int(target)]
@@ -439,7 +454,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sent = 0
         failed = 0
         
-        # 🔴 FIXED: Header added to the actual user message + correct signature
         header = "📢 *Announcement*\n\n"
         signature = "\n\n---Laadle Bot Ke Pitaji---"
         
@@ -476,212 +490,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ *Invalid cookies*\n\n{err}", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
             return
             
-        db.upsert_user(GLOBAL_UID, "SYSTEM_ACCOUNT")
-        db.set_cookies(GLOBAL_UID, text) 
+        await loop.run_in_executor(WORKER_POOL, db.upsert_user, GLOBAL_UID, "SYSTEM_ACCOUNT")
+        await loop.run_in_executor(WORKER_POOL, db.set_cookies, GLOBAL_UID, text)
         await update.message.reply_text("✅ *Global Cookies saved successfully!*\n\nThe entire bot and all background protectors are now using this session.", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
         return
 
-    # ── BULK ADD & CHECK ENGINE ───────────────────────────────────────────────
-    if state in ["awaiting_add_coupon", "awaiting_check"]:
-        category = ctx.user_data.pop("category", None) if state == "awaiting_add_coupon" else None
-        ctx.user_data.pop("state", None)
-
-        raw_splits = re.split(r"[\s,\n]+", text)
-        raw_codes = []
-        for c in raw_splits:
-            c = c.upper().strip()
-            if not c or "=" in c or ";" in c or "{" in c or '"' in c:
-                continue
-            raw_codes.append(c)
-
-        if not raw_codes:
-            await update.message.reply_text("⚠️ No valid codes found.", reply_markup=back_keyboard())
-            return
-            
-        limit = 50 if state == "awaiting_add_coupon" else 20
-        if len(raw_codes) > limit:
-            await update.message.reply_text(f"⚠️ *Too many codes!*\n\nProcessing maximum of {limit} codes.", parse_mode=ParseMode.MARKDOWN)
-            raw_codes = raw_codes[:limit]
-
-        cookie_raw = db.get_cookies(GLOBAL_UID)
-        if not cookie_raw:
-            await update.message.reply_text("❌ *System Maintenance*\n\nThe global system cookie is missing.", parse_mode=ParseMode.MARKDOWN)
-            return
-            
-        cookie_str = parse_cookies(cookie_raw)
-        total      = len(raw_codes)
-        start_time = time.time()
-
-        msg = await update.message.reply_text(f"🔍 *Processing {total} coupon(s)...*\n\n[{'░' * 10}] 0/{total}\n\n✅ 0  ❌ 0  🟡 0", parse_mode=ParseMode.MARKDOWN)
-
-        results   = []
-        valid_ct  = 0
-        invalid_ct = 0
-        redeemed_ct = 0
-        loop      = asyncio.get_event_loop()
-        expired   = False
-        processed = 0
-        
-        batch_size = 3  
-        
-        for i in range(0, total, batch_size):
-            batch = raw_codes[i:i+batch_size]
-            
-            filtered_batch = []
-            for code in batch:
-                if state == "awaiting_add_coupon" and db.coupon_exists(uid, code):
-                    results.append({"code": code, "status": "duplicate"})
-                    invalid_ct += 1
-                    processed += 1
-                else:
-                    filtered_batch.append(code)
-
-            tasks = [loop.run_in_executor(None, check_coupon, cookie_str, c) for c in filtered_batch]
-            batch_results = await asyncio.gather(*tasks)
-
-            for result in batch_results:
-                results.append(result)
-                processed += 1
-
-                if result["cookies_expired"]:
-                    expired = True
-                    break
-
-                if result["status"] == "valid":
-                    valid_ct += 1
-                    if state == "awaiting_add_coupon":
-                        db.add_coupon(uid, result["code"], category)
-                elif result["status"] == "redeemed":
-                    redeemed_ct += 1
-                else:
-                    invalid_ct += 1
-
-            if expired:
-                break
-
-            bar = progress_bar(processed, total)
-            try:
-                await msg.edit_text(
-                    f"🔍 *Processing codes...*\n\n[{bar}] {processed}/{total}\n\n✅ {valid_ct}  ❌ {invalid_ct}  🟡 {redeemed_ct}",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            except Exception:
-                pass
-                
-            await asyncio.sleep(random.uniform(1.5, 3.0))
-
-        if expired:
-            db.clear_cookies(GLOBAL_UID)
-            await notify_admins(ctx.bot, "🚨 *CRITICAL:* The global Shein cookie expired! Please set a new one.")
-            await msg.edit_text("🔴 *System Maintenance*\n\nThe backend session expired.", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
-            return
-
-        elapsed = int(time.time() - start_time)
-        lines = []
-
-        if state == "awaiting_add_coupon":
-            if valid_ct > 0:
-                protector.ensure_running(uid, ctx.bot)
-
-            lines.append(f"✅ *Add Complete* — {total} processed\n")
-            lines.append(f"🛡️ *Coupons added into the vault:* {valid_ct}")
-            failed_ct = redeemed_ct + invalid_ct
-            lines.append(f"❌ *Invalid or Already Redeemed:* {failed_ct}\n")
-
-            if valid_ct > 0:
-                lines.append("✅ *Successfully Saved:*")
-                for r in results:
-                    if r["status"] == "valid": lines.append(f"  ✅ `{r['code']}`")
-
-            if failed_ct > 0:
-                lines.append("\n⚠️ *Not Saved:*")
-                for r in results:
-                    if r["status"] == "redeemed": 
-                        lines.append(f"  🟡 `{r['code']}` _(Redeemed)_")
-                    elif r["status"] not in ["valid", "redeemed"]: 
-                        lines.append(f"  ❌ `{r['code']}` _(Invalid/Duplicate)_")
-                        
-            if failed_ct > 0:
-                lines.append("\n⚠️ *Note:* The invalid or already redeemed coupons have *NOT* been saved to your vault and are *NOT* being protected.")
-
-        else: 
-            lines.append(f"✅ *Check Complete* — {total} processed\n")
-            if valid_ct:
-                lines.append(f"✅ *Valid ({valid_ct}):*")
-                for r in results:
-                    if r["status"] == "valid": lines.append(f"  ✅ `{r['code']}`")
-            if redeemed_ct:
-                lines.append(f"\n🟡 *Already Redeemed ({redeemed_ct}):*")
-                for r in results:
-                    if r["status"] == "redeemed": lines.append(f"  🟡 `{r['code']}`")
-            if invalid_ct:
-                lines.append(f"\n❌ *Invalid / Duplicate ({invalid_ct}):*")
-                for r in results:
-                    if r["status"] not in ["valid", "redeemed"]: lines.append(f"  ❌ `{r['code']}`")
-
-        lines.append(f"\n⏱ Finished in {elapsed}s")
-        keyboard = main_menu_keyboard(is_admin(uid)) if state == "awaiting_add_coupon" else back_keyboard()
-        
-        final_text = "\n".join(lines)
-        if len(final_text) > 4000: final_text = final_text[:4000] + "\n... (truncated)"
-            
-        await msg.edit_text(final_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
-        return
-
-    await update.message.reply_text("Use the menu buttons to navigate. Click '📱 Open Menu' below.", reply_markup=main_menu_keyboard(is_admin(uid)))
-
-# ── STATUS HELPER ─────────────────────────────────────────────────────────────
-
-async def show_status(query, uid: int):
-    counts    = db.get_category_counts(uid)
-    total     = sum(counts.values())
-    running   = protector.is_running(uid)
-
-    protect_status = "▶️ Running" if running else "⏸ Stopped"
-
-    lines = [
-        "📊 *Your Vault Status*\n",
-        f"🔒 Protection: {protect_status}\n",
-        "💰 *Your Coupons:*",
-    ]
-    for cat in [500, 1000, 2000, 4000]:
-        n = counts[cat]
-        icon = "🟢" if n > 0 else "⚫"
-        lines.append(f"  {icon} ₹{cat}  →  {n} protected")
-
-    lines.append(f"\n🎫 Total: *{total}* coupon(s) protected")
-
-    await query.edit_message_text(
-        "\n".join(lines),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=status_keyboard()
-    )
-
-# ── STARTUP ───────────────────────────────────────────────────────────────────
-
-async def post_init(app: Application):
-    db.init_db()
-    db.upsert_user(GLOBAL_UID, "SYSTEM_GLOBAL")
-    await protector.restore_all(app.bot)
-    logger.info("🤖 Bot is live!")
-
-def main():
-    app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
-
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CallbackQueryHandler(cb_main_menu, pattern=r"^menu_"))
-    app.add_handler(CallbackQueryHandler(cb_category, pattern=r"^(add|retrieve)_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_retqty, pattern=r"^retqty_\d+_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_admin, pattern=r"^admin_"))
-    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
-
-    logger.info("🚀 Starting Shein Vault Bot...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
+    # ── BULK ADD & CHECK ENGINE ─────────
