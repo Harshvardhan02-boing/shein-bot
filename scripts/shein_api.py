@@ -1,17 +1,14 @@
 """
-shein_api.py — Raw Shein India HTTP layer
+shein_api.py — Asynchronous Shein India HTTP layer using httpx
 """
 
 import json
-import requests
-import time
+import httpx
 import random
-
-# ── COOKIE PARSING ────────────────────────────────────────────────────────────
+import asyncio
 
 def parse_cookies(raw: str) -> str:
     raw = raw.strip().strip("'").strip('"')
-    
     try:
         data = json.loads(raw)
         if isinstance(data, dict):
@@ -39,8 +36,6 @@ def validate_cookies(raw: str) -> tuple[bool, str, str]:
         return True, cookie_str, ""
     except Exception as e:
         return False, "", f"Cookie parse error: {e}"
-
-# ── HEADERS ───────────────────────────────────────────────────────────────────
 
 def get_headers(cookie_string: str) -> dict:
     headers = {
@@ -70,50 +65,42 @@ def get_headers(cookie_string: str) -> dict:
             
     return headers
 
-# ── API CALLS ─────────────────────────────────────────────────────────────────
-
-def apply_voucher(session: requests.Session, cookie_string: str, code: str) -> tuple:
+# 🔴 FULL ASYNC HTTPX IMPLEMENTATION
+async def apply_voucher(client: httpx.AsyncClient, cookie_string: str, code: str) -> tuple:
     url = "https://www.sheinindia.in/api/cart/apply-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
     
     clean_cookie = parse_cookies(cookie_string)
     headers = get_headers(clean_cookie)
     
-    # 🔴 ANTI-BOT STEALTH: Random micro-delay so concurrent requests don't hit at the exact same ms
-    time.sleep(random.uniform(0.2, 0.9))
+    # Non-blocking sleep
+    await asyncio.sleep(random.uniform(0.1, 0.4))
     
     print(f"\n🌐 [SHEIN API] Sending request for code: {code}")
     
     try:
-        resp = session.post(url, json=payload, headers=headers, timeout=45)
-        
+        resp = await client.post(url, json=payload, headers=headers, timeout=45.0)
         print(f"🌐 [SHEIN API] HTTP Status Code: {resp.status_code}")
-        print(f"🌐 [SHEIN API] Response Body: {resp.text[:300]}") 
-        
         try:
             return resp.status_code, resp.json()
         except Exception:
             return resp.status_code, {"errorMessage": "non_json_response"}
             
-    except requests.exceptions.Timeout:
-        print("🌐 [SHEIN API] ❌ ERROR: Connection Timed Out. Shein might be blocking Railway's IP.")
+    except httpx.TimeoutException:
+        print("🌐 [SHEIN API] ❌ ERROR: Connection Timed Out.")
         return None, {"errorMessage": "timeout"}
     except Exception as e:
         print(f"🌐 [SHEIN API] ❌ ERROR: Network Request Failed: {e}")
         return None, {"errorMessage": str(e)}
 
-def reset_voucher(session: requests.Session, cookie_string: str, code: str):
+async def reset_voucher(client: httpx.AsyncClient, cookie_string: str, code: str):
     url = "https://www.sheinindia.in/api/cart/reset-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
-    
     clean_cookie = parse_cookies(cookie_string)
-    
     try:
-        session.post(url, json=payload, headers=get_headers(clean_cookie), timeout=20)
+        await client.post(url, json=payload, headers=get_headers(clean_cookie), timeout=20.0)
     except Exception:
         pass
-
-# ── RESPONSE INTERPRETATION ───────────────────────────────────────────────────
 
 STATUS_VALID    = "valid"
 STATUS_REDEEMED = "redeemed"
