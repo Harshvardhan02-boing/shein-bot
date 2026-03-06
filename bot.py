@@ -34,10 +34,10 @@ ADMIN_IDS  = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.st
 CATEGORIES = [500, 1000, 2000, 4000]
 GLOBAL_UID = 0  
 
-# 🔴 TWO-POOL SYSTEM: Keeps menus responsive
+# DB Pool handles synchronous SQLite queries without freezing the bot
 DB_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=40)
-API_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
+# Semaphore controls Shein API traffic to prevent 503 IP blocks
 GLOBAL_API_SEMAPHORE = None 
 
 # ── KEYBOARDS ─────────────────────────────────────────────────────────────────
@@ -142,10 +142,6 @@ MAIN_MENU_TEXT = (
 # ── BACKGROUND PROCESSOR BRANCH ───────────────────────────────────────────────
 
 async def process_coupons_in_background(uid, state, category, raw_codes, cookie_str, msg, is_user_admin, bot):
-    """
-    This runs completely detached from the Telegram handler.
-    It allows the user to use the bot instantly while it updates the progress bar in the background.
-    """
     loop = asyncio.get_event_loop()
     total = len(raw_codes)
     start_time = time.time()
@@ -178,9 +174,10 @@ async def process_coupons_in_background(uid, state, category, raw_codes, cookie_
                 else:
                     filtered_batch.append(code)
 
+            # 🔴 FIXED: Awaiting the pure async function properly without the executor
             async def safe_check(c):
                 async with GLOBAL_API_SEMAPHORE:
-                    return await loop.run_in_executor(API_POOL, check_coupon, cookie_str, c)
+                    return await check_coupon(cookie_str, c)
 
             tasks = [safe_check(c) for c in filtered_batch]
             
@@ -675,13 +672,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cookie_str = parse_cookies(cookie_raw)
         total = len(raw_codes)
         
-        # Initial fast reply to the user
         msg = await update.message.reply_text(
             f"🔍 *Processing {total} coupon(s)...*\n\n[{'░' * 10}] 0/{total}\n\n✅ 0  ❌ 0  🟡 0\n\n_You can continue using the bot. This will update in the background!_", 
             parse_mode=ParseMode.MARKDOWN
         )
 
-        # 🔴 THE MAGIC SAUCE: Sends the work to a background branch and frees up the user!
         asyncio.create_task(
             process_coupons_in_background(
                 uid=uid, 
@@ -695,7 +690,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         )
         
-        # Instantly finish this interaction so the user is not frozen
         return
 
     await update.message.reply_text("Use the menu buttons to navigate. Click '📱 Open Menu' below.", reply_markup=main_menu_keyboard(is_admin(uid)))
@@ -731,7 +725,6 @@ async def show_status(query, uid: int):
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 async def post_init(app: Application):
-    # Initializes the semaphore correctly inside the active event loop
     global GLOBAL_API_SEMAPHORE
     GLOBAL_API_SEMAPHORE = asyncio.Semaphore(4)
     
