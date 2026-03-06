@@ -9,6 +9,7 @@ import logging
 import time
 import re
 import random
+import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -298,13 +299,17 @@ async def cb_retqty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=back_keyboard()
     )
 
+    ist_time = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+    current_time_str = ist_time.strftime("%I:%M %p IST")
+
     codes_text = "\n".join([f"`{c}`" for c in codes])
     await ctx.bot.send_message(
         chat_id=uid,
         text=(
             f"📤 *Your Retrieved ₹{category} Coupon(s):*\n\n"
             f"{codes_text}\n\n"
-            f"⚡ Apply them on Shein immediately!\n"
+            f"🕒 *Retrieved At:* {current_time_str}\n"
+            f"⚠️ *IMPORTANT:* *Use after 15 to 20 minutes* (The background protection temporarily locks codes in a virtual cart).\n\n"
             f"🛒 sheinindia.in/cart\n\n"
             f"_{available - len(codes)} ₹{category} coupon(s) remaining in vault._"
         ),
@@ -342,7 +347,7 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "admin_stats":
         users       = db.get_user_count()
         coupons     = db.get_total_voucher_count()
-        running     = protector.running_count()
+        running     = db.get_active_protector_count() 
         all_users   = db.get_users_with_coupon_counts()
 
         user_lines = "\n".join(
@@ -428,8 +433,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         expired   = False
         processed = 0
         
-        # 🔴 ANTI-BOT STEALTH BATCHING
-        batch_size = 3  # Reduced batch size to stay under Akamai's radar
+        batch_size = 3  
         
         for i in range(0, total, batch_size):
             batch = raw_codes[i:i+batch_size]
@@ -475,7 +479,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
                 
-            # 🔴 ANTI-BOT STEALTH: Randomized human-like pause between batches
             await asyncio.sleep(random.uniform(1.5, 3.0))
 
         if expired:
@@ -484,27 +487,49 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("🔴 *System Maintenance*\n\nThe backend session expired.", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
             return
 
-        if state == "awaiting_add_coupon" and valid_ct > 0:
-            protector.ensure_running(uid, ctx.bot)
-
         elapsed = int(time.time() - start_time)
-        title = "Bulk Add Complete" if state == "awaiting_add_coupon" else "Check Complete"
-        lines   = [f"✅ *{title}* — {total} processed\n"]
-        
-        if valid_ct:
-            lines.append(f"✅ *Valid ({valid_ct}):*")
-            for r in results:
-                if r["status"] == "valid": lines.append(f"  ✅ `{r['code']}`")
+        lines = []
 
-        if redeemed_ct:
-            lines.append(f"\n🟡 *Already Redeemed ({redeemed_ct}):*")
-            for r in results:
-                if r["status"] == "redeemed": lines.append(f"  🟡 `{r['code']}`")
+        if state == "awaiting_add_coupon":
+            if valid_ct > 0:
+                protector.ensure_running(uid, ctx.bot)
 
-        if invalid_ct:
-            lines.append(f"\n❌ *Invalid / Duplicate ({invalid_ct}):*")
-            for r in results:
-                if r["status"] not in ["valid", "redeemed"]: lines.append(f"  ❌ `{r['code']}`")
+            lines.append(f"✅ *Add Complete* — {total} processed\n")
+            lines.append(f"🛡️ *Coupons added into the vault:* {valid_ct}")
+            failed_ct = redeemed_ct + invalid_ct
+            lines.append(f"❌ *Invalid or Already Redeemed:* {failed_ct}\n")
+
+            if valid_ct > 0:
+                lines.append("✅ *Successfully Saved:*")
+                for r in results:
+                    if r["status"] == "valid": lines.append(f"  ✅ `{r['code']}`")
+
+            if failed_ct > 0:
+                lines.append("\n⚠️ *Not Saved:*")
+                for r in results:
+                    if r["status"] == "redeemed": 
+                        lines.append(f"  🟡 `{r['code']}` _(Redeemed)_")
+                    elif r["status"] not in ["valid", "redeemed"]: 
+                        lines.append(f"  ❌ `{r['code']}` _(Invalid/Duplicate)_")
+                        
+            # Explicit warning at the bottom
+            if failed_ct > 0:
+                lines.append("\n⚠️ *Note:* The invalid or already redeemed coupons have *NOT* been saved to your vault and are *NOT* being protected.")
+
+        else: # state == awaiting_check
+            lines.append(f"✅ *Check Complete* — {total} processed\n")
+            if valid_ct:
+                lines.append(f"✅ *Valid ({valid_ct}):*")
+                for r in results:
+                    if r["status"] == "valid": lines.append(f"  ✅ `{r['code']}`")
+            if redeemed_ct:
+                lines.append(f"\n🟡 *Already Redeemed ({redeemed_ct}):*")
+                for r in results:
+                    if r["status"] == "redeemed": lines.append(f"  🟡 `{r['code']}`")
+            if invalid_ct:
+                lines.append(f"\n❌ *Invalid / Duplicate ({invalid_ct}):*")
+                for r in results:
+                    if r["status"] not in ["valid", "redeemed"]: lines.append(f"  ❌ `{r['code']}`")
 
         lines.append(f"\n⏱ Finished in {elapsed}s")
         keyboard = main_menu_keyboard(is_admin(uid)) if state == "awaiting_add_coupon" else back_keyboard()
@@ -523,7 +548,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         all_ids   = db.get_all_user_ids()
         sent      = 0
         failed    = 0
-        broadcast = f"📢 *Announcement*\n\n{text}\n\n— _Shein Vault Bot Admin_"
+        
+        broadcast = f"📢 *Announcement*\n\n{text}\n\n_From:-LadleProtecterBot ke Pitaji_"
+        
         status_msg = await update.message.reply_text(f"📤 Sending to {len(all_ids)} users...")
         for user_id in all_ids:
             try:
