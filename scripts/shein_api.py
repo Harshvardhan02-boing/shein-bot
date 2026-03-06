@@ -65,7 +65,6 @@ def get_headers(cookie_string: str) -> dict:
             
     return headers
 
-# 🔴 FULL ASYNC HTTPX IMPLEMENTATION
 async def apply_voucher(client: httpx.AsyncClient, cookie_string: str, code: str) -> tuple:
     url = "https://www.sheinindia.in/api/cart/apply-voucher"
     payload = {"voucherId": code, "device": {"client_type": "web"}}
@@ -73,13 +72,13 @@ async def apply_voucher(client: httpx.AsyncClient, cookie_string: str, code: str
     clean_cookie = parse_cookies(cookie_string)
     headers = get_headers(clean_cookie)
     
-    # Non-blocking sleep
     await asyncio.sleep(random.uniform(0.1, 0.4))
     
     print(f"\n🌐 [SHEIN API] Sending request for code: {code}")
     
     try:
-        resp = await client.post(url, json=payload, headers=headers, timeout=45.0)
+        # 🔴 FIXED: Timeout reduced to 12 seconds so the bot escapes network freezes
+        resp = await client.post(url, json=payload, headers=headers, timeout=12.0)
         print(f"🌐 [SHEIN API] HTTP Status Code: {resp.status_code}")
         try:
             return resp.status_code, resp.json()
@@ -98,7 +97,8 @@ async def reset_voucher(client: httpx.AsyncClient, cookie_string: str, code: str
     payload = {"voucherId": code, "device": {"client_type": "web"}}
     clean_cookie = parse_cookies(cookie_string)
     try:
-        await client.post(url, json=payload, headers=get_headers(clean_cookie), timeout=20.0)
+        # 🔴 FIXED: Timeout reduced to 8 seconds
+        await client.post(url, json=payload, headers=get_headers(clean_cookie), timeout=8.0)
     except Exception:
         pass
 
