@@ -438,8 +438,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         sent = 0
         failed = 0
-        signature = "\n\n_From:-LadleProtecterBot ke Pitaji_"
-        final_text = text + signature if text else signature
+        
+        # 🔴 FIXED: Header added to the actual user message + correct signature
+        header = "📢 *Announcement*\n\n"
+        signature = "\n\n---Laadle Bot Ke Pitaji---"
+        
+        if text:
+            final_text = f"{header}{text}{signature}"
+        else:
+            final_text = f"{header}{signature}"
         
         status_msg = await update.message.reply_text(f"📤 Sending to {len(all_ids)} user(s)...")
         
