@@ -34,11 +34,9 @@ ADMIN_IDS  = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.st
 CATEGORIES = [500, 1000, 2000, 4000]
 GLOBAL_UID = 0  
 
-# 🔴 ANTI-FREEZE & ANTI-BOT UPGRADES:
-# 1. DB_POOL: Guarantees the bot menus NEVER freeze, even if Shein's API is completely down/timed out.
-# 2. API_POOL & SEMAPHORE: Strictly throttles requests to stop Shein (Akamai) from throwing 503 IP Blocks.
-DB_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=40)
-API_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+# DB operations still use a thread pool because SQLite is synchronous
+DB_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=20)
+# Async semaphore to restrict Shein API concurrency, preventing 503 blocks.
 GLOBAL_API_SEMAPHORE = asyncio.Semaphore(2) 
 
 # ── KEYBOARDS ─────────────────────────────────────────────────────────────────
@@ -545,8 +543,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             active_codes = set()
 
-        # 🔴 ANTI-AKAMAI STEALTH BATCHING
-        batch_size = 2  # Slowed down batch size to bypass Shein's 503 limits
+        batch_size = 2  
         
         for i in range(0, total, batch_size):
             batch = raw_codes[i:i+batch_size]
@@ -560,10 +557,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 else:
                     filtered_batch.append(code)
 
-            # 🔴 PREVENTS FREEZES: Binds the check to the strictly limited API_POOL
+            # 🔴 FULLY ASYNC HTTPX EXECUTION
             async def safe_check(c):
                 async with GLOBAL_API_SEMAPHORE:
-                    return await loop.run_in_executor(API_POOL, check_coupon, cookie_str, c)
+                    return await check_coupon(cookie_str, c)
 
             tasks = [safe_check(c) for c in filtered_batch]
             batch_results = await asyncio.gather(*tasks)
@@ -598,7 +595,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
                 
-            # Increased human-like delay to stop 503 connection timeouts
             await asyncio.sleep(random.uniform(2.5, 4.5))
 
         if expired:
@@ -692,10 +688,6 @@ async def show_status(query, uid: int):
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 async def post_init(app: Application):
-    # This prevents the default loop from getting starved by the protector loop
-    loop = asyncio.get_event_loop()
-    loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=30))
-    
     db.init_db()
     db.upsert_user(GLOBAL_UID, "SYSTEM_GLOBAL")
     await protector.restore_all(app.bot)
