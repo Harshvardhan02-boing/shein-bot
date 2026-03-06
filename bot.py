@@ -1,4 +1,4 @@
-"""
+]"""
 bot.py — Shein Voucher Vault Bot
 All Telegram handlers and UI live here.
 """
@@ -125,7 +125,7 @@ async def notify_admins(bot, text: str):
             pass
 
 MAIN_MENU_TEXT = (
-    "🛍 *Shein Voucher Vault*\n\n"
+    "🛍 *Laadle Voucher Vault*\n\n"
     "Your personal coupon protection system.\n"
     "Add coupons → auto-protected 24/7\n"
     "Retrieve when you need to use one.\n\n"
@@ -139,7 +139,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     db.upsert_user(user.id, user.username or user.first_name or "")
     
     await update.message.reply_text(
-        "Welcome to the Shein Voucher Vault! 🛍️\n\n"
+        "Welcome to Laadle Protector Vault|\n\n"
         "Use the 📱 **Open Menu** button at the bottom of your screen to access the bot.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=default_reply_keyboard()
@@ -329,8 +329,15 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "admin_announce":
-        await query.edit_message_text("📢 *Broadcast Message*\n\nType your announcement below.\nIt will be sent to all users:", parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
-        ctx.user_data["state"] = "awaiting_announce"
+        await query.edit_message_text(
+            "📢 *Send Announcement*\n\n"
+            "Who do you want to message?\n\n"
+            "• Type `ALL` to broadcast to everyone.\n"
+            "• Or type a specific `User ID` (e.g. 123456789).",
+            parse_mode=ParseMode.MARKDOWN, 
+            reply_markup=back_keyboard()
+        )
+        ctx.user_data["state"] = "awaiting_announce_target"
         return
         
     if data == "admin_set_cookie":
@@ -347,7 +354,12 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "admin_stats":
         users       = db.get_user_count()
         coupons     = db.get_total_voucher_count()
-        running     = db.get_active_protector_count() 
+        # Fallback in case DB lacks the count function temporarily
+        try:
+            running = db.get_active_protector_count() 
+        except AttributeError:
+            running = "N/A"
+            
         all_users   = db.get_users_with_coupon_counts()
 
         user_lines_list = []
@@ -356,33 +368,37 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not uname or uname.lower() == "none":
                 uname = "unknown"
             
-            # Escape HTML characters so Telegram parsing NEVER crashes
-            safe_uname = uname.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
-            
-            user_lines_list.append(f"  • @{safe_uname} <code>({u['telegram_id']})</code>: <b>{u['active_count']}</b> protected")
+            safe_uname = uname.replace("_", "-").replace("*", "") 
+            user_lines_list.append(f"  • @{safe_uname} `({u['telegram_id']})`: *{u['active_count']}* protected")
             
         user_lines = "\n".join(user_lines_list)
 
         if len(all_users) > 30:
-            user_lines += f"\n  <i>...and {len(all_users)-30} more</i>"
+            user_lines += f"\n  _...and {len(all_users)-30} more_"
 
-        # 🔴 CHANGED: Uses HTML parse mode. This is indestructible.
         text = (
-            f"📊 <b>Live Bot Dashboard</b>\n\n"
-            f"👥 Total users: <b>{users}</b>\n"
-            f"🎫 Active coupons globally: <b>{coupons}</b>\n"
-            f"🔒 Running background loops: <b>{running}</b>\n\n"
-            f"👤 <b>User Leaderboard:</b>\n{user_lines}"
+            f"📊 *Live Bot Dashboard*\n\n"
+            f"👥 Total users: *{users}*\n"
+            f"🎫 Active coupons globally: *{coupons}*\n"
+            f"🔒 Running background loops: *{running}*\n\n"
+            f"👤 *User Leaderboard:*\n{user_lines}"
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=admin_keyboard())
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
         return
 
 # ── MESSAGE HANDLER ───────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid   = update.effective_user.id
-    text  = update.message.text.strip() if update.message.text else ""
     state = ctx.user_data.get("state")
+    
+    # Handle both text and image captions
+    is_photo = bool(update.message.photo)
+    text = ""
+    if update.message.text:
+        text = update.message.text.strip()
+    elif update.message.caption:
+        text = update.message.caption.strip()
 
     db.upsert_user(uid, update.effective_user.username or "")
 
@@ -391,6 +407,62 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(MAIN_MENU_TEXT, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard(is_admin(uid)))
         return
 
+    # ── TARGETED ANNOUNCEMENTS ────────────────────────────────────────────────
+    if state == "awaiting_announce_target" and is_admin(uid):
+        ctx.user_data.pop("state", None)
+        if not text:
+            await update.message.reply_text("⚠️ Please send a valid User ID or 'ALL'.", reply_markup=back_keyboard())
+            return
+            
+        ctx.user_data["announce_target"] = text
+        ctx.user_data["state"] = "awaiting_announce_content"
+        await update.message.reply_text(
+            "📝 Target Set! Now send the **text message** OR an **image with a caption**.", 
+            parse_mode=ParseMode.MARKDOWN, 
+            reply_markup=back_keyboard()
+        )
+        return
+
+    if state == "awaiting_announce_content" and is_admin(uid):
+        ctx.user_data.pop("state", None)
+        target = ctx.user_data.pop("announce_target", "ALL")
+
+        if target.upper() == "ALL":
+            all_ids = db.get_all_user_ids()
+        else:
+            try:
+                all_ids = [int(target)]
+            except ValueError:
+                await update.message.reply_text("❌ Invalid target ID format.", reply_markup=back_keyboard())
+                return
+
+        sent = 0
+        failed = 0
+        signature = "\n\n---LaadleProtectorBot ke Pitaji---"
+        final_text = text + signature if text else signature
+        
+        status_msg = await update.message.reply_text(f"📤 Sending to {len(all_ids)} user(s)...")
+        
+        for user_id in all_ids:
+            try:
+                if is_photo:
+                    photo_id = update.message.photo[-1].file_id
+                    await ctx.bot.send_photo(chat_id=user_id, photo=photo_id, caption=final_text, parse_mode=ParseMode.MARKDOWN)
+                else:
+                    await ctx.bot.send_message(chat_id=user_id, text=final_text, parse_mode=ParseMode.MARKDOWN)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05) 
+
+        await status_msg.edit_text(f"✅ *Announcement sent!*\n\n📨 Delivered: {sent}\n❌ Failed: {failed}", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # If it's a photo but not in announcement mode, ignore it
+    if is_photo:
+        return
+
+    # ── GLOBAL ADMIN COOKIES ──────────────────────────────────────────────────
     if state == "awaiting_global_cookie" and is_admin(uid):
         ctx.user_data.pop("state", None)
         ok, cookie_str, err = validate_cookies(text)
@@ -403,6 +475,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ *Global Cookies saved successfully!*\n\nThe entire bot and all background protectors are now using this session.", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
         return
 
+    # ── BULK ADD & CHECK ENGINE ───────────────────────────────────────────────
     if state in ["awaiting_add_coupon", "awaiting_check"]:
         category = ctx.user_data.pop("category", None) if state == "awaiting_add_coupon" else None
         ctx.user_data.pop("state", None)
@@ -549,31 +622,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(final_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
         return
 
-    if state == "awaiting_announce":
-        ctx.user_data.pop("state", None)
-        if not is_admin(uid):
-            return
-
-        all_ids   = db.get_all_user_ids()
-        sent      = 0
-        failed    = 0
-        
-        # 🔴 CHANGED: Uses HTML to completely prevent crashes if admin types a weird character
-        safe_text = text.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
-        broadcast = f"📢 <b>Announcement</b>\n\n{safe_text}\n\n<i>From:-LadleProtecterBot ke Pitaji</i>"
-        
-        status_msg = await update.message.reply_text(f"📤 Sending to {len(all_ids)} users...")
-        for user_id in all_ids:
-            try:
-                await ctx.bot.send_message(user_id, broadcast, parse_mode=ParseMode.HTML)
-                sent += 1
-            except Exception:
-                failed += 1
-            await asyncio.sleep(0.05) 
-
-        await status_msg.edit_text(f"✅ <b>Announcement sent!</b>\n\n📨 Delivered: {sent}\n❌ Failed: {failed}", parse_mode=ParseMode.HTML)
-        return
-
     await update.message.reply_text("Use the menu buttons to navigate. Click '📱 Open Menu' below.", reply_markup=main_menu_keyboard(is_admin(uid)))
 
 # ── STATUS HELPER ─────────────────────────────────────────────────────────────
@@ -619,12 +667,13 @@ def main():
         .build()
     )
 
+    # Added support for both text and images in the main message handler
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(cb_main_menu, pattern=r"^menu_"))
     app.add_handler(CallbackQueryHandler(cb_category, pattern=r"^(add|retrieve)_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_retqty, pattern=r"^retqty_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_admin, pattern=r"^admin_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
 
     logger.info("🚀 Starting Shein Vault Bot...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
