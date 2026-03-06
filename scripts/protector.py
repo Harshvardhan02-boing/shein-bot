@@ -6,7 +6,7 @@ import os
 import asyncio
 import logging
 import random
-import requests
+import httpx
 from typing import Dict
 
 import db
@@ -56,45 +56,43 @@ async def _run_loop(telegram_id: int, bot):
                 continue
 
             cycle_had_error = False
-            for coupon in coupons:
-                code = coupon["code"]
+            
+            # 🔴 FIXED: Now using the modern httpx AsyncClient to prevent freezes
+            async with httpx.AsyncClient() as client:
+                for coupon in coupons:
+                    code = coupon["code"]
 
-                # Ensure this doesn't block the thread
-                still_exists = await loop.run_in_executor(None, db.coupon_exists, telegram_id, code)
-                if not still_exists:
-                    continue
-
-                session = requests.Session()
-                try:
-                    http_status, data = await loop.run_in_executor(
-                        None, lambda s=session: apply_voucher(s, cookie_str, code)
-                    )
-                    status = interpret_response(http_status, data)
-                finally:
-                    session.close()
-
-                if status == STATUS_EXPIRED:
-                    await loop.run_in_executor(None, db.clear_cookies, GLOBAL_UID)
-                    await _notify_admin(bot, "🚨 *CRITICAL PROTECTOR STOP:* The global Shein cookie expired in the background!\n\nAll protection loops are paused. Please set a new cookie in the Admin Panel.")
-                    await asyncio.sleep(CYCLE_PAUSE)
-                    continue
-
-                elif status == STATUS_ERROR:
-                    consecutive_fails += 1
-                    logger.warning(f"⚠️ Protect error for {code} (user {telegram_id}) — fail #{consecutive_fails}")
-                    cycle_had_error = True
-
-                    if consecutive_fails >= MAX_CONSEC_FAILS:
-                        await _notify_admin(bot, f"⚠️ *Protector Network Issue:* Multiple network errors encountered. Check Railway IPs or Cloudflare status.")
-                        await asyncio.sleep(CYCLE_PAUSE * 5) 
+                    # Ensure this doesn't block the thread
+                    still_exists = await loop.run_in_executor(None, db.coupon_exists, telegram_id, code)
+                    if not still_exists:
                         continue
 
-                else:
-                    consecutive_fails = 0
-                    logger.debug(f"✅ Protected {code} for user {telegram_id} — {status}")
+                    # 🔴 FIXED: Awaiting the new async apply_voucher correctly
+                    http_status, data = await apply_voucher(client, cookie_str, code)
+                    status = interpret_response(http_status, data)
 
-                wait = random.uniform(*BETWEEN_APPLY)
-                await asyncio.sleep(wait)
+                    if status == STATUS_EXPIRED:
+                        await loop.run_in_executor(None, db.clear_cookies, GLOBAL_UID)
+                        await _notify_admin(bot, "🚨 *CRITICAL PROTECTOR STOP:* The global Shein cookie expired in the background!\n\nAll protection loops are paused. Please set a new cookie in the Admin Panel.")
+                        await asyncio.sleep(CYCLE_PAUSE)
+                        break  # Break out of the coupon loop to wait for a new cookie
+
+                    elif status == STATUS_ERROR:
+                        consecutive_fails += 1
+                        logger.warning(f"⚠️ Protect error for {code} (user {telegram_id}) — fail #{consecutive_fails}")
+                        cycle_had_error = True
+
+                        if consecutive_fails >= MAX_CONSEC_FAILS:
+                            await _notify_admin(bot, f"⚠️ *Protector Network Issue:* Multiple network errors encountered. Check Railway IPs or Cloudflare status.")
+                            await asyncio.sleep(CYCLE_PAUSE * 5) 
+                            break
+
+                    else:
+                        consecutive_fails = 0
+                        logger.debug(f"✅ Protected {code} for user {telegram_id} — {status}")
+
+                    wait = random.uniform(*BETWEEN_APPLY)
+                    await asyncio.sleep(wait)
 
             if not cycle_had_error:
                 consecutive_fails = 0
@@ -146,4 +144,3 @@ async def restore_all(bot):
             count += 1
     if count:
         logger.info(f"♻️ Restored {count} protector loop(s) on startup")
-                    
