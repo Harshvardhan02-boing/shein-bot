@@ -350,21 +350,31 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         running     = db.get_active_protector_count() 
         all_users   = db.get_users_with_coupon_counts()
 
-        user_lines = "\n".join(
-            f"  • @{u['username']} `({u['telegram_id']})`: *{u['active_count']}* protected"
-            for u in all_users[:30]
-        )
-        if len(all_users) > 30:
-            user_lines += f"\n  _...and {len(all_users)-30} more_"
+        user_lines_list = []
+        for u in all_users[:30]:
+            uname = u['username']
+            if not uname or uname.lower() == "none":
+                uname = "unknown"
+            
+            # Escape HTML characters so Telegram parsing NEVER crashes
+            safe_uname = uname.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+            
+            user_lines_list.append(f"  • @{safe_uname} <code>({u['telegram_id']})</code>: <b>{u['active_count']}</b> protected")
+            
+        user_lines = "\n".join(user_lines_list)
 
+        if len(all_users) > 30:
+            user_lines += f"\n  <i>...and {len(all_users)-30} more</i>"
+
+        # 🔴 CHANGED: Uses HTML parse mode. This is indestructible.
         text = (
-            f"📊 *Live Bot Dashboard*\n\n"
-            f"👥 Total users: *{users}*\n"
-            f"🎫 Active coupons globally: *{coupons}*\n"
-            f"🔒 Running background loops: *{running}*\n\n"
-            f"👤 *User Leaderboard:*\n{user_lines}"
+            f"📊 <b>Live Bot Dashboard</b>\n\n"
+            f"👥 Total users: <b>{users}</b>\n"
+            f"🎫 Active coupons globally: <b>{coupons}</b>\n"
+            f"🔒 Running background loops: <b>{running}</b>\n\n"
+            f"👤 <b>User Leaderboard:</b>\n{user_lines}"
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=admin_keyboard())
         return
 
 # ── MESSAGE HANDLER ───────────────────────────────────────────────────────────
@@ -512,11 +522,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     elif r["status"] not in ["valid", "redeemed"]: 
                         lines.append(f"  ❌ `{r['code']}` _(Invalid/Duplicate)_")
                         
-            # Explicit warning at the bottom
             if failed_ct > 0:
                 lines.append("\n⚠️ *Note:* The invalid or already redeemed coupons have *NOT* been saved to your vault and are *NOT* being protected.")
 
-        else: # state == awaiting_check
+        else: 
             lines.append(f"✅ *Check Complete* — {total} processed\n")
             if valid_ct:
                 lines.append(f"✅ *Valid ({valid_ct}):*")
@@ -549,18 +558,20 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sent      = 0
         failed    = 0
         
-        broadcast = f"📢 *Announcement*\n\n{text}\n\n_From:-LadleProtecterBot ke Pitaji_"
+        # 🔴 CHANGED: Uses HTML to completely prevent crashes if admin types a weird character
+        safe_text = text.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+        broadcast = f"📢 <b>Announcement</b>\n\n{safe_text}\n\n<i>From:-LadleProtecterBot ke Pitaji</i>"
         
         status_msg = await update.message.reply_text(f"📤 Sending to {len(all_ids)} users...")
         for user_id in all_ids:
             try:
-                await ctx.bot.send_message(user_id, broadcast, parse_mode=ParseMode.MARKDOWN)
+                await ctx.bot.send_message(user_id, broadcast, parse_mode=ParseMode.HTML)
                 sent += 1
             except Exception:
                 failed += 1
             await asyncio.sleep(0.05) 
 
-        await status_msg.edit_text(f"✅ *Announcement sent!*\n\n📨 Delivered: {sent}\n❌ Failed: {failed}", parse_mode=ParseMode.MARKDOWN)
+        await status_msg.edit_text(f"✅ <b>Announcement sent!</b>\n\n📨 Delivered: {sent}\n❌ Failed: {failed}", parse_mode=ParseMode.HTML)
         return
 
     await update.message.reply_text("Use the menu buttons to navigate. Click '📱 Open Menu' below.", reply_markup=main_menu_keyboard(is_admin(uid)))
