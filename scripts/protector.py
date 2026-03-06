@@ -37,20 +37,20 @@ async def _notify_admin(bot, text: str):
 async def _run_loop(telegram_id: int, bot):
     logger.info(f"🔒 Protector loop started for user {telegram_id}")
     consecutive_fails = 0
+    loop = asyncio.get_event_loop()
 
     while True:
         try:
-            # The protector now uses the Global Admin Cookie
-            cookie_raw = db.get_cookies(GLOBAL_UID)
+            # Prevent DB calls from blocking the main thread
+            cookie_raw = await loop.run_in_executor(None, db.get_cookies, GLOBAL_UID)
             if not cookie_raw:
-                # Silently sleep so it auto-resumes when admin adds cookie
                 await asyncio.sleep(CYCLE_PAUSE)
                 continue
 
             from scripts.shein_api import parse_cookies
             cookie_str = parse_cookies(cookie_raw)
 
-            coupons = db.get_active_coupons(telegram_id)
+            coupons = await loop.run_in_executor(None, db.get_active_coupons, telegram_id)
             if not coupons:
                 await asyncio.sleep(CYCLE_PAUSE)
                 continue
@@ -59,12 +59,14 @@ async def _run_loop(telegram_id: int, bot):
             for coupon in coupons:
                 code = coupon["code"]
 
-                if not db.coupon_exists(telegram_id, code):
+                # Ensure this doesn't block the thread
+                still_exists = await loop.run_in_executor(None, db.coupon_exists, telegram_id, code)
+                if not still_exists:
                     continue
 
                 session = requests.Session()
                 try:
-                    http_status, data = await asyncio.get_event_loop().run_in_executor(
+                    http_status, data = await loop.run_in_executor(
                         None, lambda s=session: apply_voucher(s, cookie_str, code)
                     )
                     status = interpret_response(http_status, data)
@@ -72,9 +74,8 @@ async def _run_loop(telegram_id: int, bot):
                     session.close()
 
                 if status == STATUS_EXPIRED:
-                    db.clear_cookies(GLOBAL_UID)
+                    await loop.run_in_executor(None, db.clear_cookies, GLOBAL_UID)
                     await _notify_admin(bot, "🚨 *CRITICAL PROTECTOR STOP:* The global Shein cookie expired in the background!\n\nAll protection loops are paused. Please set a new cookie in the Admin Panel.")
-                    # Sleep and wait for admin, do NOT turn off protector_on in DB!
                     await asyncio.sleep(CYCLE_PAUSE)
                     continue
 
@@ -85,7 +86,7 @@ async def _run_loop(telegram_id: int, bot):
 
                     if consecutive_fails >= MAX_CONSEC_FAILS:
                         await _notify_admin(bot, f"⚠️ *Protector Network Issue:* Multiple network errors encountered. Check Railway IPs or Cloudflare status.")
-                        await asyncio.sleep(CYCLE_PAUSE * 5) # Back off for a while
+                        await asyncio.sleep(CYCLE_PAUSE * 5) 
                         continue
 
                 else:
@@ -102,7 +103,7 @@ async def _run_loop(telegram_id: int, bot):
 
         except asyncio.CancelledError:
             logger.info(f"Protector cancelled for user {telegram_id}")
-            db.set_protector_running(telegram_id, False)
+            await loop.run_in_executor(None, db.set_protector_running, telegram_id, False)
             return
         except Exception as e:
             logger.error(f"Protector loop exception for user {telegram_id}: {e}")
@@ -135,7 +136,8 @@ def is_running(telegram_id: int) -> bool:
     return bool(task and not task.done())
 
 async def restore_all(bot):
-    user_ids = db.get_users_with_active_protector() 
+    loop = asyncio.get_event_loop()
+    user_ids = await loop.run_in_executor(None, db.get_users_with_active_protector) 
     count = 0
     for uid in user_ids:
         if not is_running(uid):
@@ -144,3 +146,4 @@ async def restore_all(bot):
             count += 1
     if count:
         logger.info(f"♻️ Restored {count} protector loop(s) on startup")
+                    
