@@ -1,4 +1,4 @@
-]"""
+"""
 bot.py — Shein Voucher Vault Bot
 All Telegram handlers and UI live here.
 """
@@ -354,7 +354,7 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "admin_stats":
         users       = db.get_user_count()
         coupons     = db.get_total_voucher_count()
-        # Fallback in case DB lacks the count function temporarily
+        
         try:
             running = db.get_active_protector_count() 
         except AttributeError:
@@ -368,22 +368,23 @@ async def cb_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not uname or uname.lower() == "none":
                 uname = "unknown"
             
-            safe_uname = uname.replace("_", "-").replace("*", "") 
-            user_lines_list.append(f"  • @{safe_uname} `({u['telegram_id']})`: *{u['active_count']}* protected")
+            safe_uname = uname.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+            
+            user_lines_list.append(f"  • @{safe_uname} <code>({u['telegram_id']})</code>: <b>{u['active_count']}</b> protected")
             
         user_lines = "\n".join(user_lines_list)
 
         if len(all_users) > 30:
-            user_lines += f"\n  _...and {len(all_users)-30} more_"
+            user_lines += f"\n  <i>...and {len(all_users)-30} more</i>"
 
         text = (
-            f"📊 *Live Bot Dashboard*\n\n"
-            f"👥 Total users: *{users}*\n"
-            f"🎫 Active coupons globally: *{coupons}*\n"
-            f"🔒 Running background loops: *{running}*\n\n"
-            f"👤 *User Leaderboard:*\n{user_lines}"
+            f"📊 <b>Live Bot Dashboard</b>\n\n"
+            f"👥 Total users: <b>{users}</b>\n"
+            f"🎫 Active coupons globally: <b>{coupons}</b>\n"
+            f"🔒 Running background loops: <b>{running}</b>\n\n"
+            f"👤 <b>User Leaderboard:</b>\n{user_lines}"
         )
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=admin_keyboard())
         return
 
 # ── MESSAGE HANDLER ───────────────────────────────────────────────────────────
@@ -392,7 +393,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid   = update.effective_user.id
     state = ctx.user_data.get("state")
     
-    # Handle both text and image captions
     is_photo = bool(update.message.photo)
     text = ""
     if update.message.text:
@@ -438,7 +438,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         sent = 0
         failed = 0
-        signature = "\n\n---LaadleProtectorBot ke Pitaji---"
+        signature = "\n\n_From:-LadleProtecterBot ke Pitaji_"
         final_text = text + signature if text else signature
         
         status_msg = await update.message.reply_text(f"📤 Sending to {len(all_ids)} user(s)...")
@@ -458,7 +458,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"✅ *Announcement sent!*\n\n📨 Delivered: {sent}\n❌ Failed: {failed}", parse_mode=ParseMode.MARKDOWN)
         return
 
-    # If it's a photo but not in announcement mode, ignore it
     if is_photo:
         return
 
@@ -667,7 +666,6 @@ def main():
         .build()
     )
 
-    # Added support for both text and images in the main message handler
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(cb_main_menu, pattern=r"^menu_"))
     app.add_handler(CallbackQueryHandler(cb_category, pattern=r"^(add|retrieve)_\d+$"))
