@@ -85,8 +85,6 @@ def get_users_with_active_protector() -> List[int]:
 
 def add_coupon(telegram_id: int, code: str, category: int, status: str = "unknown") -> bool:
     client = _conn()
-    
-    # 🔴 FIX: UPSERT logic resurrects the coupon if it was previously retrieved
     client.execute("""
         INSERT INTO coupons (telegram_id, code, category, status, retrieved)
         VALUES (?, ?, ?, ?, 0)
@@ -161,6 +159,29 @@ def retrieve_coupon(telegram_id: int, category: int) -> Optional[dict]:
     client.close()
     return {"id": int(row[0]), "code": str(row[1]), "category": int(row[2])}
 
+def retrieve_multiple_coupons(telegram_id: int, category: int, limit: int) -> List[str]:
+    """Retrieves a bulk list of coupons."""
+    client = _conn()
+    limit_clause = f"LIMIT {int(limit)}" if limit > 0 else ""
+    result = client.execute(f"SELECT id, code FROM coupons WHERE telegram_id=? AND category=? AND retrieved=0 ORDER BY added_at ASC {limit_clause}", [telegram_id, int(category)])
+    
+    if not result.rows:
+        client.close()
+        return []
+    
+    codes = []
+    ids = []
+    for row in result.rows:
+        ids.append(str(int(row[0])))
+        codes.append(str(row[1]))
+        
+    if ids:
+        ids_str = ",".join(ids)
+        client.execute(f"UPDATE coupons SET retrieved=1, retrieved_at=strftime('%Y-%m-%d %H:%M:%S','now') WHERE id IN ({ids_str})")
+        
+    client.close()
+    return codes
+
 def get_all_coupons(telegram_id: int) -> List[dict]:
     client = _conn()
     result = client.execute("SELECT id, telegram_id, code, category, status, retrieved, added_at FROM coupons WHERE telegram_id=? AND retrieved=0 ORDER BY category ASC, added_at ASC", [telegram_id])
@@ -180,6 +201,19 @@ def get_all_user_ids() -> List[int]:
     result = client.execute("SELECT telegram_id FROM users")
     client.close()
     return [int(r[0]) for r in result.rows]
+
+def get_users_with_coupon_counts() -> List[dict]:
+    """NEW: Fetches users and dynamically counts their active vault size."""
+    client = _conn()
+    result = client.execute("""
+        SELECT u.telegram_id, u.username, COUNT(c.id) 
+        FROM users u 
+        LEFT JOIN coupons c ON u.telegram_id = c.telegram_id AND c.retrieved = 0 
+        GROUP BY u.telegram_id
+        ORDER BY COUNT(c.id) DESC
+    """)
+    client.close()
+    return [{"telegram_id": int(r[0]), "username": str(r[1] or 'unknown'), "active_count": int(r[2])} for r in result.rows]
 
 def get_stats() -> dict:
     client = _conn()
@@ -207,24 +241,9 @@ def get_user_count() -> int:
 
 def get_total_voucher_count() -> int:
     client = _conn()
-    result = client.execute("SELECT COUNT(*) FROM coupons")
+    result = client.execute("SELECT COUNT(*) FROM coupons WHERE retrieved=0")
     client.close()
     return int(result.rows[0][0]) if result.rows else 0
-
-def get_active_protector_count() -> int:
-    client = _conn()
-    result = client.execute("SELECT COUNT(*) FROM users WHERE protector_on=1")
-    client.close()
-    return int(result.rows[0][0]) if result.rows else 0
-
-def get_total_checks() -> int:
-    return 0 
-
-def get_all_users() -> List[dict]:
-    client = _conn()
-    result = client.execute("SELECT telegram_id, username, created_at, cookies FROM users")
-    client.close()
-    return [{"telegram_id": int(r[0]), "username": str(r[1]), "created_at": str(r[2]), "cookies": str(r[3])} for r in result.rows]
 
 # --- ALIAS FIXES FOR PROTECTOR.PY ---
 get_active_coupons = get_all_coupons
