@@ -18,13 +18,17 @@ from scripts.shein_api import (
 logger = logging.getLogger(__name__)
 
 CYCLE_PAUSE    = 90    # seconds between full rotation cycles
-BETWEEN_APPLY  = (3, 6)  # random seconds between each coupon in a cycle
+BETWEEN_APPLY  = (4, 7)  # seconds to pause between every single check
 MAX_CONSEC_FAILS = 5   # notify + stop after this many consecutive failures
 
 GLOBAL_UID = 0
 ADMIN_IDS  = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
 
 _tasks: Dict[int, asyncio.Task] = {}
+
+# 🔴 THE FIX: A Global Lock specifically for the background protector.
+# This prevents multiple users from accidentally spamming Shein at the exact same time.
+PROTECTOR_SEMAPHORE = None 
 
 async def _notify_admin(bot, text: str):
     """Sends critical protector alerts to all admins."""
@@ -35,13 +39,17 @@ async def _notify_admin(bot, text: str):
             pass
 
 async def _run_loop(telegram_id: int, bot):
+    global PROTECTOR_SEMAPHORE
+    if PROTECTOR_SEMAPHORE is None:
+        # Strictly enforces ONE code check at a time globally for background protection
+        PROTECTOR_SEMAPHORE = asyncio.Semaphore(1)
+
     logger.info(f"🔒 Protector loop started for user {telegram_id}")
     consecutive_fails = 0
     loop = asyncio.get_event_loop()
 
     while True:
         try:
-            # Prevent DB calls from blocking the main thread
             cookie_raw = await loop.run_in_executor(None, db.get_cookies, GLOBAL_UID)
             if not cookie_raw:
                 await asyncio.sleep(CYCLE_PAUSE)
@@ -57,19 +65,23 @@ async def _run_loop(telegram_id: int, bot):
 
             cycle_had_error = False
             
-            # 🔴 FIXED: Now using the modern httpx AsyncClient to prevent freezes
             async with httpx.AsyncClient() as client:
                 for coupon in coupons:
                     code = coupon["code"]
 
-                    # Ensure this doesn't block the thread
                     still_exists = await loop.run_in_executor(None, db.coupon_exists, telegram_id, code)
                     if not still_exists:
                         continue
 
-                    # 🔴 FIXED: Awaiting the new async apply_voucher correctly
-                    http_status, data = await apply_voucher(client, cookie_str, code)
-                    status = interpret_response(http_status, data)
+                    # 🔴 THE FIX: Forces ALL users to wait in a single global line
+                    async with PROTECTOR_SEMAPHORE:
+                        http_status, data = await apply_voucher(client, cookie_str, code)
+                        status = interpret_response(http_status, data)
+
+                        # We sleep INSIDE the lock so no other user can fire a request 
+                        # until this human-like delay is finished.
+                        wait = random.uniform(*BETWEEN_APPLY)
+                        await asyncio.sleep(wait)
 
                     if status == STATUS_EXPIRED:
                         await loop.run_in_executor(None, db.clear_cookies, GLOBAL_UID)
@@ -83,16 +95,13 @@ async def _run_loop(telegram_id: int, bot):
                         cycle_had_error = True
 
                         if consecutive_fails >= MAX_CONSEC_FAILS:
-                            await _notify_admin(bot, f"⚠️ *Protector Network Issue:* Multiple network errors encountered. Check Railway IPs or Cloudflare status.")
+                            await _notify_admin(bot, f"⚠️ *Protector Network Issue:* Multiple network errors encountered. Pausing to avoid IP ban.")
                             await asyncio.sleep(CYCLE_PAUSE * 5) 
                             break
 
                     else:
                         consecutive_fails = 0
                         logger.debug(f"✅ Protected {code} for user {telegram_id} — {status}")
-
-                    wait = random.uniform(*BETWEEN_APPLY)
-                    await asyncio.sleep(wait)
 
             if not cycle_had_error:
                 consecutive_fails = 0
